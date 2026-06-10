@@ -199,9 +199,15 @@ Also run:
 
 ```bash
 footballctl odds-readiness --json
+footballctl live-refresh --date 2026-06-10 --dry-run --json
+footballctl live-refresh --date 2026-06-10 --scope live-leagues --dry-run --json
+footballctl live-decision --json
+footballctl live-decision --full-profile-audit --json
 ```
 
-This live-data audit is separate from backtesting. It checks whether today/future matches have enough stored odds snapshots, bookmaker coverage, market averages, best prices, matching active strategy profiles, and per-league coverage status. The current historical CSV data is sufficient for research backtests, but production picks need fresh multi-bookmaker odds in `odds_snapshots`.
+This live-data audit is separate from backtesting. It checks whether today/future matches have enough stored odds snapshots, odds freshness, bookmaker coverage, market averages, best prices, matching active strategy profiles, and per-league coverage status. The current historical CSV data is sufficient for research backtests, but production picks need fresh multi-bookmaker odds in `odds_snapshots`. Both odds readiness and the live gate reject otherwise valid candidates when the matched market odds are older than `live_trading.max_odds_age_minutes` (default `90`). When profile odds are blocked, `odds_readiness.refresh_requirements` lists the exact active profile, refresh league, market, selection, bookmaker minimum, missing ready-match count, and blocking issues. `live-decision` is the final reproducible go/no-go snapshot: by default it uses a fast profile contract audit, then combines odds readiness, live review, preflight, thresholds, and reproducibility inputs in one JSON report. The non-JSON operator summary stays short and surfaces both odds refresh requirements and the closest blocked candidates. Use `live-decision --full-profile-audit --json` or `backtest profile-audit --json` for the heavier portfolio drift audit before rollout, after strategy changes, or as a scheduled daily control.
+
+If either preflight or live-decision returns `action: "refresh_fixtures_and_odds"`, use `live-refresh` as the auditable response. `--dry-run` reports the active-profile league plan without quota use; removing `--dry-run` executes fixture refresh first, odds refresh second, and returns the post-refresh preflight in the same JSON payload. Source selection defaults to `auto`, so each league resolves to the first configured fixture and odds provider it can use. If the executed default refresh returns `active_profile_refresh_empty:<leagues>` plus `consider_scope_live_leagues`, the active-profile calendar has no usable markets for that date; `--scope live-leagues` then expands the plan to every non-paper live league and is useful for finding low-stake tier-policy candidates when the elite active-profile leagues have no near-term markets. `live-leagues` scans do not spend fallback odds-source quota by default; add `--allow-odds-fallback` only when you intentionally want `auto` odds refresh to try the next mapped provider after the preferred provider is empty or fails. Dry-run issues such as `fixtures_source_unmapped:<league>:<source>` or `odds_source_unmapped:<league>:<source>` mean that a requested fixed source cannot refresh that league under the current config and should be handled before spending quota.
 
 ## League Tier Coverage
 
@@ -222,22 +228,32 @@ The smaller professional leagues are live-coverage leagues, not validated strate
 
 Candidates that fail these stricter gates stay as `paper_candidate`. This keeps the calendar useful while still separating low-liquidity small-league risk from elite-league strategy profiles.
 
-Odds-API.io can list many future fixtures for these leagues. The ingestion command now defaults to each league's configured event cap:
+Odds-API.io can list many future fixtures for these leagues. The ingestion command now defaults to each league's configured event cap and batches event odds through `/odds/multi` in groups of up to 10 events:
 
 ```bash
 footballctl ingest odds --source odds_api_io --league K_LEAGUE_1 --json
 ```
 
-Use `--max-events` only when a one-off run needs a tighter or wider cap and there is enough quota headroom.
+Use `--max-events` only when a one-off run needs a tighter or wider cap and there is enough quota headroom. The requested bookmaker set comes from `data_sources.odds_api_io.bookmakers`; adjust it only to names supported by the account/API plan, then confirm the result through `odds_readiness.refresh_requirements` and the live gate.
 
 The first production settlement loop is now in place:
 
 ```bash
 footballctl ingest results --date 2026-06-10 --source api_football --league K_LEAGUE_1 --json
+footballctl live-refresh --date 2026-06-10 --dry-run --json
+footballctl live-refresh --date 2026-06-10 --scope live-leagues --dry-run --json
+footballctl daily-ops --date 2026-06-10 --json
+footballctl live-review --json
+footballctl live-decision --json
+footballctl settle-open-bets --json
 footballctl settle-bet <bet-id> --closing-odds 2.05 --json
 footballctl performance --by-league --json
 ```
 
-This loop stores finished scores, settles `1x2` bets from final score, records closing odds for CLV, and reports ROI/CLV by configured league and tier. Asian handicap and totals still need line-specific settlement rules before they should be auto-settled.
+This loop stores finished scores, then uses `daily-ops` to batch-settle open bets, refresh performance, attach live review, and attach the current live preflight state in one JSON report. `settle-open-bets`, `settle-bet`, and `live-review` remain available for narrower settlement, manual correction, or independent promotion/demotion review. `1x2`, Asian handicap, and totals can be inferred from final score. Asian handicap selections such as `AH_AWAY(+0.5)` / `AH_HOME(-0.25)` and totals such as `OVER 2.5` / `UNDER:2.5` can now be auto-settled, including `half_win` and `half_loss` outcomes.
 
-The next evidence step is promotion/demotion policy: review each small league weekly, keep profitable positive-CLV leagues live at low stake, demote weak leagues back to paper-only, and create independent validated strategy profiles only after enough settled sample exists.
+Use `live-decision` after `daily-ops` when deciding whether to place any real stake. The default mode is optimized for intraday operation and reports `reproducibility.profile_audit_mode: "contract"`; add `--full-profile-audit` when you need the heavier strategy profile audit to detect configured profiles that drift, go missing from the current portfolio audit, or otherwise fail reproducibility checks. If the action is `refresh_fixtures_and_odds`, use `odds_readiness.refresh_requirements` before spending quota so the refresh targets the missing active-profile league and market rather than broad scanning.
+
+Real-platform bet recording is guarded separately from strategy scoring. A real-platform `record-bet` must match a passed live recommendation, stay within the approved stake cap, be recorded before kickoff, avoid cumulative duplicate stake, and keep execution odds within `live_trading.max_execution_odds_slippage` of the approved recommendation price.
+
+Promotion/demotion policy is now explicit in `live-review`: after at least `live_trading.review_min_settled_bets` settled bets, negative ROI or negative CLV recommends demotion, and ROI at or below `live_trading.review_pause_roi` with negative CLV recommends `pause_live`. The command does not automatically edit `config/default.yaml`, but profile actions `pause_live` and `demote_to_paper` are consumed by the live gate so the next matching recommendation is forced back to paper until evidence recovers or config is changed intentionally.

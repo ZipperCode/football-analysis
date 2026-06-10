@@ -56,7 +56,8 @@ def _strategy_profile_for_edge(
     if not league_code:
         return None
     selection = _normalized_strategy_selection(edge.selection, edge.market_type)
-    for profile in settings.strategy_profiles:
+    profiles = sorted(settings.strategy_profiles, key=lambda item: (not item.live_enabled, item.id))
+    for profile in profiles:
         if not profile.active:
             continue
         if profile.league_code.upper() != league_code:
@@ -126,6 +127,11 @@ def _strategy_profile_payload(profile: StrategyProfileSettings | None) -> dict:
         "positive_folds": profile.positive_folds,
         "fold_count": profile.fold_count,
         "average_clv": profile.average_clv,
+        "live_enabled": profile.live_enabled,
+        "long_horizon_roi": profile.long_horizon_roi,
+        "long_horizon_settled_bets": profile.long_horizon_settled_bets,
+        "holdout_roi": profile.holdout_roi,
+        "holdout_settled_bets": profile.holdout_settled_bets,
     }
 
 
@@ -312,14 +318,8 @@ def score_match(
         stake_units = 0.0
         reason = "；".join(reasons) + "，按风控规则不进入主推。"
 
-    tier_policy_gates_failed: list[str] = []
-    if (
-        status is RecommendationStatus.recommended
-        and strategy_profile is None
-        and strategy_confidence_class == "live_scoring"
-        and tier_policy is not None
-    ):
-        tier_policy_gates_failed = _tier_policy_gates_failed(
+    tier_policy_gates_failed: list[str] = (
+        _tier_policy_gates_failed(
             tier_policy,
             match=match,
             value_score=value_score,
@@ -327,6 +327,15 @@ def score_match(
             confidence=confidence,
             bookmaker_count=bookmaker_count,
         )
+        if tier_policy is not None
+        else []
+    )
+    if (
+        status is RecommendationStatus.recommended
+        and strategy_profile is None
+        and strategy_confidence_class == "live_scoring"
+        and tier_policy is not None
+    ):
         if tier_policy_gates_failed:
             status = RecommendationStatus.paper_candidate
             stake_units = 0.0

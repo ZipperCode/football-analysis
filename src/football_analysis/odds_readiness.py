@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import Field
 
@@ -23,6 +23,9 @@ class OddsMarketCoverage(AppModel):
     selections: list[str] = Field(default_factory=list)
     has_market_average: bool
     has_best_price: bool
+    freshest_odds_collected_at: str | None = None
+    odds_age_minutes: int | None = None
+    max_odds_age_minutes: int | None = None
     ready: bool
     issues: list[str] = Field(default_factory=list)
     strategy_profile_ids: list[str] = Field(default_factory=list)
@@ -62,6 +65,21 @@ class LeagueCoverageReadiness(AppModel):
     issues: list[str] = Field(default_factory=list)
 
 
+class OddsRefreshRequirement(AppModel):
+    profile_id: str
+    name: str
+    strategy_league_code: str
+    refresh_league_code: str | None = None
+    league_name: str | None = None
+    market_type: str
+    selections: list[str] = Field(default_factory=list)
+    required_bookmakers: int
+    matching_matches: int
+    ready_matches: int
+    needed_ready_matches: int
+    issues: list[str] = Field(default_factory=list)
+
+
 class OddsReadinessReport(AppModel):
     checked_at: datetime
     status: str
@@ -79,6 +97,7 @@ class OddsReadinessReport(AppModel):
     profiles: list[StrategyProfileReadiness] = Field(default_factory=list)
     market_coverages: list[OddsMarketCoverage] = Field(default_factory=list)
     league_coverages: list[LeagueCoverageReadiness] = Field(default_factory=list)
+    refresh_requirements: list[OddsRefreshRequirement] = Field(default_factory=list)
 
 
 def audit_odds_readiness(
@@ -116,6 +135,8 @@ def audit_odds_readiness(
         league_by_match=league_by_match,
         required_bookmakers_by_match=required_bookmakers_by_match,
         default_min_bookmakers=min_bookmakers,
+        settings=settings,
+        checked_at=now,
     )
     league_coverages = _build_league_coverages(
         settings=settings,
@@ -143,6 +164,12 @@ def audit_odds_readiness(
     partial_profiles = sum(1 for profile in profiles if profile.status == "partial")
     insufficient_profiles = sum(1 for profile in profiles if profile.status == "insufficient")
     issues = _report_issues(profiles, scoped_matches, scoped_odds)
+    refresh_requirements = _build_refresh_requirements(
+        profiles,
+        settings=settings,
+        min_profile_matches=min_profile_matches,
+        default_min_bookmakers=min_bookmakers,
+    )
     if profiles and ready_profiles == len(profiles):
         status = "ready"
     elif ready_profiles > 0 or partial_profiles > 0:
@@ -167,6 +194,7 @@ def audit_odds_readiness(
         profiles=profiles,
         market_coverages=market_coverages,
         league_coverages=league_coverages,
+        refresh_requirements=refresh_requirements,
     )
 
 
@@ -175,6 +203,8 @@ def _build_market_coverages(
     league_by_match: dict[str, str | None],
     required_bookmakers_by_match: dict[str, int],
     default_min_bookmakers: int,
+    settings: Settings,
+    checked_at: datetime,
 ) -> list[OddsMarketCoverage]:
     """Group snapshots by match and market, then apply the league-specific bookmaker gate."""
     groups: dict[tuple[str, str, str | None], list[OddsSnapshot]] = defaultdict(list)
@@ -189,12 +219,17 @@ def _build_market_coverages(
         required_bookmakers = required_bookmakers_by_match.get(match_id, default_min_bookmakers)
         has_market_average = _has_complete_prices(group, selections, "market_average")
         has_best_price = _has_complete_prices(group, selections, "best_price")
+        freshest_odds = _freshest_odds_collected_at(group)
+        odds_age_minutes = _age_minutes_since(freshest_odds, checked_at) if freshest_odds else None
+        max_odds_age_minutes = settings.live_trading.max_odds_age_minutes
         if bookmaker_count < required_bookmakers:
             issues.append(f"bookmakers_below_min:{bookmaker_count}/{required_bookmakers}")
         if not has_market_average:
             issues.append("missing_market_average")
         if not has_best_price:
             issues.append("missing_best_price")
+        if odds_age_minutes is not None and odds_age_minutes > max_odds_age_minutes:
+            issues.append(f"odds_older_than_max_minutes:{odds_age_minutes}/{max_odds_age_minutes}")
         coverages.append(
             OddsMarketCoverage(
                 match_id=match_id,
@@ -208,6 +243,9 @@ def _build_market_coverages(
                 selections=selections,
                 has_market_average=has_market_average,
                 has_best_price=has_best_price,
+                freshest_odds_collected_at=_format_odds_time(freshest_odds, settings) if freshest_odds else None,
+                odds_age_minutes=odds_age_minutes,
+                max_odds_age_minutes=max_odds_age_minutes,
                 ready=not issues,
                 issues=issues,
             )
@@ -304,6 +342,8 @@ def _profile_readiness(
         issues.append("league_not_configured")
     if not matching_groups:
         issues.append("no_matching_market_odds")
+    for issue in sorted({issue for coverage in matching_groups for issue in coverage.issues}):
+        issues.append(issue)
     if matching_groups and len(ready_matches) < min_profile_matches:
         issues.append(f"ready_matches_below_min:{len(ready_matches)}/{min_profile_matches}")
 
@@ -342,6 +382,44 @@ def _profile_ids_by_market_group(
         if profile_ids:
             result[_market_key(coverage)] = profile_ids
     return result
+
+
+def _build_refresh_requirements(
+    profiles: list[StrategyProfileReadiness],
+    settings: Settings,
+    min_profile_matches: int,
+    default_min_bookmakers: int,
+) -> list[OddsRefreshRequirement]:
+    requirements: list[OddsRefreshRequirement] = []
+    for profile in profiles:
+        if profile.status == "ready":
+            continue
+        league = _league_for_strategy_code(settings, profile.league_code)
+        required_bookmakers = league.min_bookmakers if league else default_min_bookmakers
+        requirements.append(
+            OddsRefreshRequirement(
+                profile_id=profile.profile_id,
+                name=profile.name,
+                strategy_league_code=profile.league_code.upper(),
+                refresh_league_code=league.code if league else None,
+                league_name=league.name if league else None,
+                market_type=profile.market_type,
+                selections=profile.selections,
+                required_bookmakers=required_bookmakers,
+                matching_matches=profile.matching_matches,
+                ready_matches=profile.ready_matches,
+                needed_ready_matches=max(0, min_profile_matches - profile.ready_matches),
+                issues=profile.issues,
+            )
+        )
+    return sorted(
+        requirements,
+        key=lambda item: (
+            item.refresh_league_code or "",
+            item.market_type,
+            item.profile_id,
+        ),
+    )
 
 
 def _coverage_matches_profile(coverage: OddsMarketCoverage, profile: StrategyProfileSettings) -> bool:
@@ -384,6 +462,27 @@ def _has_complete_prices(group: list[OddsSnapshot], selections: list[str], field
     return True
 
 
+def _freshest_odds_collected_at(group: list[OddsSnapshot]) -> datetime | None:
+    if not group:
+        return None
+    return max((snapshot.collected_at for snapshot in group), key=_as_utc)
+
+
+def _format_odds_time(value: datetime, settings: Settings) -> str:
+    return _as_utc(value).astimezone(settings.app.tzinfo).isoformat()
+
+
+def _age_minutes_since(value: datetime, checked_at: datetime) -> int:
+    age_seconds = max(0.0, (_as_utc(checked_at) - _as_utc(value)).total_seconds())
+    return int(age_seconds // 60)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _football_data_uk_code(match: Match, settings: Settings) -> str | None:
     league = _league_settings_for_match(match, settings)
     return _strategy_league_code(league)
@@ -420,6 +519,14 @@ def _strategy_league_code(league: LeagueSettings | None) -> str | None:
     if league is None:
         return None
     return (league.football_data_uk_code or league.code).upper()
+
+
+def _league_for_strategy_code(settings: Settings, strategy_code: str) -> LeagueSettings | None:
+    normalized = strategy_code.upper()
+    for league in settings.leagues:
+        if _strategy_league_code(league) == normalized:
+            return league
+    return None
 
 
 def _match_local_date(match: Match, settings: Settings):

@@ -17,11 +17,30 @@ class OddsApiIoClient:
         payload = self._get("/events", {"sport": sport, "league": league})
         return map_events(payload)
 
-    def odds(self, event_id: str, sport: str = "football", bookmakers: str = "Bet365,1xbet") -> list[OddsSnapshot]:
+    def odds(self, event_id: str, sport: str = "football", bookmakers: str | None = None) -> list[OddsSnapshot]:
         if not event_id:
             raise DataSourceError("missing_event_id:odds_api_io")
-        params = {"sport": sport, "eventId": event_id, "bookmakers": bookmakers}
+        bookmaker_param = bookmakers or _configured_bookmakers(self.context.source.bookmakers)
+        params = {"sport": sport, "eventId": event_id, "bookmakers": bookmaker_param}
         payload = self._get("/odds", params)
+        return map_odds(payload)
+
+    def odds_multi(
+        self,
+        event_ids: list[str],
+        sport: str = "football",
+        bookmakers: str | None = None,
+    ) -> list[OddsSnapshot]:
+        clean_event_ids = [event_id.strip() for event_id in event_ids if event_id.strip()]
+        if not clean_event_ids:
+            return []
+        bookmaker_param = bookmakers or _configured_bookmakers(self.context.source.bookmakers)
+        params = {
+            "sport": sport,
+            "eventIds": ",".join(clean_event_ids),
+            "bookmakers": bookmaker_param,
+        }
+        payload = self._get("/odds/multi", params)
         return map_odds(payload)
 
     def _get(self, endpoint: str, params: dict[str, Any]) -> Any:
@@ -64,11 +83,16 @@ def map_events(payload: Any) -> list[Match]:
                 home_team=str(home),
                 away_team=str(away),
                 kickoff_at=_parse_datetime(str(starts)),
-                data_completeness=0.56,
+                data_completeness=0.75,
                 external_ids={"odds_api_io_event": event_id},
             )
         )
     return matches
+
+
+def _configured_bookmakers(bookmakers: list[str]) -> str:
+    cleaned = [item.strip() for item in bookmakers if item.strip()]
+    return ",".join(cleaned) if cleaned else "Bet365,1xbet"
 
 
 def map_odds(payload: Any) -> list[OddsSnapshot]:

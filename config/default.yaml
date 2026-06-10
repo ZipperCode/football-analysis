@@ -139,6 +139,7 @@ leagues:
     odds_api_slug: international-fifa-world-cup
     aliases:
       - World - FIFA World Cup
+      - International - FIFA World Cup
     tier: major_tournament
     analysis_depth: deep
     strategy_mode: paper
@@ -292,7 +293,59 @@ backtest:
   default_league: E0
   default_season: "2526"
 
+live_trading:
+  enabled: true
+  min_bookmakers: 2
+  max_odds_age_minutes: 90
+  max_execution_odds_slippage: 0.01
+  min_data_quality: 0.82
+  min_value_score: 68.0
+  max_risk_score: 42.0
+  min_confidence: 0.58
+  min_edge: 0.025
+  min_long_horizon_bets: 150
+  min_long_horizon_roi: 0.08
+  min_holdout_bets: 80
+  min_holdout_roi: 0.08
+  min_holdout_positive_rate: 0.60
+  min_average_clv: 0.01
+  max_worst_season_roi: -0.35
+  max_recent_consecutive_losses: 3
+  rolling_window_settled_bets: 8
+  min_rolling_settled_bets: 5
+  max_rolling_loss_units: 2.0
+  min_rolling_roi: -0.25
+  review_min_settled_bets: 6
+  review_min_roi: 0.0
+  review_min_average_clv: 0.0
+  review_pause_roi: -0.15
+  max_stake_units_per_pick: 0.5
+  max_daily_stake_units: 1.2
+
 strategy_profiles:
+  - id: i1_middle_ah_away_live_long_horizon
+    name: I1 middle-season AH away live candidate
+    league_code: I1
+    market_type: asian_handicap
+    selections:
+      - AH_AWAY
+    season_phases:
+      - middle
+    stability_label: live_candidate
+    roi: 0.189
+    settled_bets: 231
+    positive_folds: 13
+    fold_count: 16
+    average_clv: 0.0154
+    live_enabled: true
+    max_stake_units: 0.4
+    long_horizon_roi: 0.189
+    long_horizon_settled_bets: 231
+    holdout_roi: 0.194
+    holdout_settled_bets: 122
+    holdout_positive_seasons: 5
+    holdout_season_count: 7
+    worst_season_roi: -0.1737
   - id: e0_all_home_robust
     name: E0 all-season home value
     league_code: E0
@@ -368,6 +421,9 @@ data_sources:
     enabled: true
     base_url: https://api.odds-api.io/v3
     api_key_env: ODDS_API_IO_KEY
+    bookmakers:
+      - Bet365
+      - 1xbet
     free_tier_note: "100 requests/hour on the free plan according to PLAN.md."
   football_data_org:
     name: football-data.org

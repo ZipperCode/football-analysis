@@ -120,6 +120,16 @@ class BetLog(AppModel):
     profit_units: float | None = None
 
 
+class BetSettlementReport(AppModel):
+    scanned_count: int
+    settled_count: int
+    skipped_count: int
+    error_count: int
+    settled_bets: list[BetLog] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 class MatchAnalysis(AppModel):
     match: Match
     odds_snapshots: list[OddsSnapshot]

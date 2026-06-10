@@ -101,6 +101,42 @@ class StrategyProfileAuditReport(BaseModel):
     items: list[StrategyProfileAuditItem]
 
 
+class LongHorizonWindowSummary(BaseModel):
+    seasons: list[str]
+    bets: int
+    settled_bets: int
+    profit_units: float
+    roi: float | None
+    positive_seasons: int
+    season_count: int
+    average_clv: float | None
+    worst_season_roi: float | None
+    season_breakdown: list[dict] = Field(default_factory=list)
+
+
+class LongHorizonCandidate(BaseModel):
+    name: str
+    league: str
+    family: str
+    params: dict
+    score: float
+    discovery: LongHorizonWindowSummary
+    holdout: LongHorizonWindowSummary
+    total: LongHorizonWindowSummary
+
+
+class LongHorizonScanReport(BaseModel):
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    league: str
+    family: str
+    seasons: list[str]
+    discovery_seasons: list[str]
+    holdout_seasons: list[str]
+    quick: bool = False
+    window_mode: str = "continuous_replay_season_breakdown"
+    candidates: list[LongHorizonCandidate]
+
+
 @dataclass
 class TeamState:
     matches: int = 0
@@ -362,24 +398,39 @@ def audit_strategy_profiles(
 
     for profile_id, profile in configured_by_id.items():
         candidate = portfolio_by_id.get(profile_id)
-        if candidate is None:
+        if candidate is not None:
+            drift = _profile_drift(profile, candidate, roi_tolerance, clv_tolerance)
             items.append(
                 StrategyProfileAuditItem(
                     profile_id=profile_id,
-                    status="missing_from_portfolio",
-                    message="configured profile is active but not present in the current portfolio",
+                    status="matched" if not drift else "stale",
+                    message="profile matches current portfolio" if not drift else "; ".join(drift),
                     configured=_profile_config_payload(profile),
+                    portfolio=_profile_candidate_payload(candidate),
                 )
             )
             continue
-        drift = _profile_drift(profile, candidate, roi_tolerance, clv_tolerance)
+
+        long_horizon_candidate = _long_horizon_candidate_for_profile(repository, profile)
+        if long_horizon_candidate is not None:
+            drift = _long_horizon_profile_drift(profile, long_horizon_candidate, roi_tolerance, clv_tolerance)
+            items.append(
+                StrategyProfileAuditItem(
+                    profile_id=profile_id,
+                    status="matched" if not drift else "stale",
+                    message="profile matches current long-horizon scan" if not drift else "; ".join(drift),
+                    configured=_profile_config_payload(profile),
+                    portfolio=_profile_long_horizon_payload(profile, long_horizon_candidate),
+                )
+            )
+            continue
+
         items.append(
             StrategyProfileAuditItem(
                 profile_id=profile_id,
-                status="matched" if not drift else "stale",
-                message="profile matches current portfolio" if not drift else "; ".join(drift),
+                status="missing_from_portfolio",
+                message="configured profile is active but not present in the current portfolio",
                 configured=_profile_config_payload(profile),
-                portfolio=_profile_candidate_payload(candidate),
             )
         )
 
@@ -399,6 +450,81 @@ def audit_strategy_profiles(
     items.sort(key=lambda item: (status_order.get(item.status, 9), item.profile_id))
     passed = all(item.status == "matched" for item in items)
     return StrategyProfileAuditReport(seasons=seasons, passed=passed, items=items)
+
+
+def long_horizon_scan(
+    repository: StructuredRepository,
+    league: str = "I1",
+    family: str = "asian-away",
+    seasons: list[str] | None = None,
+    discovery_start: str = "1011",
+    discovery_end: str = "1819",
+    holdout_start: str = "1920",
+    quick: bool = False,
+    limit: int = 10,
+    min_total_bets: int = 180,
+    min_discovery_bets: int = 80,
+    min_holdout_bets: int = 80,
+    min_discovery_roi: float = 0.08,
+    min_holdout_roi: float = 0.08,
+    min_holdout_positive_seasons: int = 4,
+) -> LongHorizonScanReport:
+    normalized_league = league.upper()
+    normalized_family = family.strip().lower()
+    rows = [
+        row
+        for row in repository.list_models("historical_matches", HistoricalMatchRow)
+        if row.league == normalized_league
+    ]
+    available_seasons = sorted(set(seasons or [row.season for row in rows]))
+    discovery_seasons, holdout_seasons = _long_horizon_windows(
+        available_seasons,
+        discovery_start=discovery_start,
+        discovery_end=discovery_end,
+        holdout_start=holdout_start,
+    )
+    scan_seasons = [season for season in available_seasons if season in set(discovery_seasons + holdout_seasons)]
+    candidates: list[LongHorizonCandidate] = []
+
+    for params in _long_horizon_grid(normalized_family, quick=quick):
+        result = run_strategy_on_rows(rows, normalized_league, scan_seasons, params)
+        discovery = _summarize_strategy_window(normalized_league, discovery_seasons, result.season_breakdown)
+        holdout = _summarize_strategy_window(normalized_league, holdout_seasons, result.season_breakdown)
+        total = _summarize_strategy_window(normalized_league, scan_seasons, result.season_breakdown)
+        if (
+            total.settled_bets < min_total_bets
+            or discovery.settled_bets < min_discovery_bets
+            or holdout.settled_bets < min_holdout_bets
+            or (discovery.roi is None or discovery.roi < min_discovery_roi)
+            or (holdout.roi is None or holdout.roi < min_holdout_roi)
+            or holdout.positive_seasons < min_holdout_positive_seasons
+        ):
+            continue
+        candidates.append(
+            LongHorizonCandidate(
+                name=_long_horizon_candidate_name(normalized_league, normalized_family, params),
+                league=normalized_league,
+                family=normalized_family,
+                params=params.__dict__,
+                score=_long_horizon_score(discovery, holdout, total),
+                discovery=discovery,
+                holdout=holdout,
+                total=total,
+            )
+        )
+
+    candidates.sort(key=lambda item: (item.score, item.total.roi or -1.0, item.total.settled_bets), reverse=True)
+    if limit > 0:
+        candidates = candidates[:limit]
+    return LongHorizonScanReport(
+        league=normalized_league,
+        family=normalized_family,
+        seasons=scan_seasons,
+        discovery_seasons=discovery_seasons,
+        holdout_seasons=holdout_seasons,
+        quick=quick,
+        candidates=candidates,
+    )
 
 
 def run_strategy(
@@ -508,6 +634,211 @@ def _normalize_leagues(leagues: list[str] | None) -> list[str]:
         return ["E0", "SP1", "D1", "I1", "F1"]
     normalized = [league.strip().upper() for league in leagues if league.strip()]
     return normalized or ["E0", "SP1", "D1", "I1", "F1"]
+
+
+def _long_horizon_windows(
+    seasons: list[str],
+    discovery_start: str,
+    discovery_end: str,
+    holdout_start: str,
+) -> tuple[list[str], list[str]]:
+    ordered = sorted(set(seasons))
+    discovery = [season for season in ordered if discovery_start <= season <= discovery_end]
+    holdout = [season for season in ordered if season >= holdout_start]
+    if not discovery:
+        raise ValueError("long_horizon_scan_missing_discovery_seasons")
+    if not holdout:
+        raise ValueError("long_horizon_scan_missing_holdout_seasons")
+    return discovery, holdout
+
+
+def _long_horizon_grid(family: str, quick: bool) -> list[StrategyParams]:
+    supported = {"asian-away", "asian-home", "market-home", "market-away"}
+    if family not in supported:
+        raise ValueError(f"unsupported_long_horizon_family:{family}")
+    if family == "asian-away":
+        selection_bias = "ah_away"
+        mode = "asian_value"
+        phase = "middle"
+        quick_params = StrategyParams(
+            mode=mode,
+            min_edge=0.025,
+            min_odds=1.80,
+            max_odds=2.70,
+            min_matches=5,
+            max_bets_per_season=25,
+            allow_draw=False,
+            require_positive_recent=True,
+            min_strength=0.50,
+            min_prob_gap=0.02,
+            selection_bias=selection_bias,
+            season_phase=phase,
+        )
+        if quick:
+            return [quick_params]
+        return [
+            StrategyParams(
+                mode=mode,
+                min_edge=min_edge,
+                min_odds=min_odds,
+                max_odds=max_odds,
+                min_matches=5,
+                max_bets_per_season=max_bets_per_season,
+                allow_draw=False,
+                require_positive_recent=True,
+                min_strength=min_strength,
+                min_prob_gap=0.02,
+                selection_bias=selection_bias,
+                season_phase=phase,
+            )
+            for min_edge, min_odds, max_odds, min_strength, max_bets_per_season in product(
+                [0.025, 0.035, 0.05],
+                [1.80, 1.85, 1.90],
+                [2.50, 2.70],
+                [0.30, 0.40, 0.50],
+                [15, 20, 25, 35],
+            )
+        ]
+    if family == "asian-home":
+        selection_bias = "ah_home"
+        mode = "asian_value"
+        phase = "all"
+        quick_params = StrategyParams(
+            mode=mode,
+            min_edge=0.035,
+            min_odds=1.90,
+            max_odds=2.70,
+            min_matches=5,
+            max_bets_per_season=20,
+            allow_draw=False,
+            require_positive_recent=True,
+            min_strength=0.50,
+            min_prob_gap=0.02,
+            selection_bias=selection_bias,
+            season_phase=phase,
+        )
+        if quick:
+            return [quick_params]
+        return [
+            StrategyParams(
+                mode=mode,
+                min_edge=min_edge,
+                min_odds=min_odds,
+                max_odds=max_odds,
+                min_matches=5,
+                max_bets_per_season=max_bets_per_season,
+                allow_draw=False,
+                require_positive_recent=True,
+                min_strength=min_strength,
+                min_prob_gap=0.02,
+                selection_bias=selection_bias,
+                season_phase=season_phase,
+            )
+            for min_edge, min_odds, max_odds, min_strength, max_bets_per_season, season_phase in product(
+                [0.025, 0.035, 0.05],
+                [1.80, 1.90],
+                [2.50, 2.70],
+                [0.30, 0.50],
+                [15, 20, 25],
+                ["all", "middle"],
+            )
+        ]
+    selection_bias = "home" if family == "market-home" else "away"
+    quick_params = StrategyParams(
+        mode="market_value",
+        min_edge=0.025,
+        min_odds=1.80,
+        max_odds=3.25,
+        min_matches=5,
+        max_bets_per_season=25,
+        allow_draw=False,
+        require_positive_recent=True,
+        min_strength=0.30,
+        min_prob_gap=0.02,
+        selection_bias=selection_bias,
+        season_phase="all",
+    )
+    if quick:
+        return [quick_params]
+    return [
+        StrategyParams(
+            mode="market_value",
+            min_edge=min_edge,
+            min_odds=min_odds,
+            max_odds=max_odds,
+            min_matches=5,
+            max_bets_per_season=max_bets_per_season,
+            allow_draw=False,
+            require_positive_recent=True,
+            min_strength=min_strength,
+            min_prob_gap=0.02,
+            selection_bias=selection_bias,
+            season_phase=season_phase,
+        )
+        for min_edge, min_odds, max_odds, min_strength, max_bets_per_season, season_phase in product(
+            [0.015, 0.025, 0.035],
+            [1.55, 1.80, 2.00],
+            [3.00, 3.25, 4.50],
+            [0.0, 0.30, 0.50],
+            [15, 25, 40, 60],
+            ["all", "middle"],
+        )
+    ]
+
+
+def _long_horizon_candidate_name(league: str, family: str, params: StrategyParams) -> str:
+    if family in {"asian-away", "asian-home"}:
+        side = "away" if family == "asian-away" else "home"
+        return f"{league} {params.season_phase}-season AH {side} long-horizon scan"
+    if family in {"market-home", "market-away"}:
+        side = "home" if family == "market-home" else "away"
+        return f"{league} {params.season_phase}-season 1x2 {side} long-horizon scan"
+    return f"{league} {family} long-horizon scan"
+
+
+def _summarize_strategy_window(
+    league: str,
+    seasons: list[str],
+    season_breakdown: list[dict],
+) -> LongHorizonWindowSummary:
+    season_set = set(seasons)
+    selected = [item for item in season_breakdown if item.get("seasons", [None])[0] in season_set]
+    settled = sum(int(item.get("settled_bets") or 0) for item in selected)
+    bets = sum(int(item.get("bets") or 0) for item in selected)
+    profit = sum(float(item.get("profit_units") or 0.0) for item in selected)
+    roi = profit / settled if settled else None
+    clv_values = [float(item["average_clv"]) for item in selected if item.get("average_clv") is not None]
+    season_rois = [float(item["roi"]) for item in selected if item.get("roi") is not None]
+    return LongHorizonWindowSummary(
+        seasons=seasons,
+        bets=bets,
+        settled_bets=settled,
+        profit_units=round(profit, 3),
+        roi=round(roi, 4) if roi is not None else None,
+        positive_seasons=sum(1 for item in selected if (item.get("roi") or 0.0) > 0),
+        season_count=len(seasons),
+        average_clv=round(mean(clv_values), 4) if clv_values else None,
+        worst_season_roi=round(min(season_rois), 4) if season_rois else None,
+        season_breakdown=selected,
+    )
+
+
+def _long_horizon_score(
+    discovery: LongHorizonWindowSummary,
+    holdout: LongHorizonWindowSummary,
+    total: LongHorizonWindowSummary,
+) -> float:
+    discovery_consistency = discovery.positive_seasons / discovery.season_count if discovery.season_count else 0.0
+    holdout_consistency = holdout.positive_seasons / holdout.season_count if holdout.season_count else 0.0
+    clv_bonus = min(holdout.average_clv or 0.0, 0.03)
+    score = (
+        (discovery.roi or -1.0)
+        + min(total.roi or 0.0, 0.20) * 0.30
+        + discovery_consistency * 0.05
+        + holdout_consistency * 0.05
+        + clv_bonus
+    )
+    return round(score, 4)
 
 
 def _phase_allowed(requested_phase: str, current_phase: str) -> bool:
@@ -708,11 +1039,19 @@ def _profile_config_payload(profile: StrategyProfileSettings) -> dict:
         "positive_folds": profile.positive_folds,
         "fold_count": profile.fold_count,
         "average_clv": profile.average_clv,
+        "long_horizon_roi": profile.long_horizon_roi,
+        "long_horizon_settled_bets": profile.long_horizon_settled_bets,
+        "holdout_roi": profile.holdout_roi,
+        "holdout_settled_bets": profile.holdout_settled_bets,
+        "holdout_positive_seasons": profile.holdout_positive_seasons,
+        "holdout_season_count": profile.holdout_season_count,
+        "worst_season_roi": profile.worst_season_roi,
     }
 
 
 def _profile_candidate_payload(candidate: StrategyPortfolioItem) -> dict:
     return {
+        "source": "walk_forward",
         "id": _profile_id_for_candidate(candidate),
         "league_code": candidate.league,
         "season_phases": candidate.season_phases,
@@ -722,6 +1061,95 @@ def _profile_candidate_payload(candidate: StrategyPortfolioItem) -> dict:
         "positive_folds": candidate.positive_folds,
         "fold_count": candidate.fold_count,
         "average_clv": candidate.average_clv,
+    }
+
+
+def _long_horizon_candidate_for_profile(
+    repository: StructuredRepository,
+    profile: StrategyProfileSettings,
+) -> LongHorizonCandidate | None:
+    if not _profile_uses_long_horizon(profile):
+        return None
+    family = _long_horizon_family_for_profile(profile)
+    if family is None:
+        return None
+    try:
+        report = long_horizon_scan(repository, league=profile.league_code, family=family, quick=True)
+    except ValueError:
+        return None
+    for candidate in report.candidates:
+        if _long_horizon_candidate_matches_profile(profile, candidate):
+            return candidate
+    return None
+
+
+def _profile_uses_long_horizon(profile: StrategyProfileSettings) -> bool:
+    return (
+        profile.long_horizon_roi is not None
+        or profile.long_horizon_settled_bets > 0
+        or profile.holdout_roi is not None
+        or profile.holdout_settled_bets > 0
+    )
+
+
+def _long_horizon_family_for_profile(profile: StrategyProfileSettings) -> str | None:
+    market = profile.market_type.strip().lower()
+    selections = {selection.strip().upper() for selection in profile.selections}
+    if market == "asian_handicap":
+        if any(selection.startswith("AH_AWAY") or selection.startswith("AWAY") for selection in selections):
+            return "asian-away"
+        if any(selection.startswith("AH_HOME") or selection.startswith("HOME") for selection in selections):
+            return "asian-home"
+        return None
+    if market == "1x2":
+        if any(selection.startswith("HOME") for selection in selections):
+            return "market-home"
+        if any(selection.startswith("AWAY") for selection in selections):
+            return "market-away"
+    return None
+
+
+def _long_horizon_candidate_matches_profile(
+    profile: StrategyProfileSettings,
+    candidate: LongHorizonCandidate,
+) -> bool:
+    family = _long_horizon_family_for_profile(profile)
+    phases = _normalized_profile_phases(profile)
+    candidate_phase = str(candidate.params.get("season_phase") or "all").lower()
+    return (
+        profile.league_code.upper() == candidate.league
+        and family == candidate.family
+        and ("all" in phases or candidate_phase in phases)
+    )
+
+
+def _profile_long_horizon_payload(
+    profile: StrategyProfileSettings,
+    candidate: LongHorizonCandidate,
+) -> dict:
+    candidate_phase = str(candidate.params.get("season_phase") or "all").lower()
+    return {
+        "source": "long_horizon",
+        "id": profile.id,
+        "league_code": candidate.league,
+        "family": candidate.family,
+        "season_phases": [candidate_phase],
+        "stability_label": profile.stability_label,
+        "roi": candidate.total.roi,
+        "settled_bets": candidate.total.settled_bets,
+        "positive_folds": candidate.total.positive_seasons,
+        "fold_count": candidate.total.season_count,
+        "average_clv": candidate.total.average_clv,
+        "long_horizon_roi": candidate.total.roi,
+        "long_horizon_settled_bets": candidate.total.settled_bets,
+        "holdout_roi": candidate.holdout.roi,
+        "holdout_settled_bets": candidate.holdout.settled_bets,
+        "holdout_positive_seasons": candidate.holdout.positive_seasons,
+        "holdout_season_count": candidate.holdout.season_count,
+        "worst_season_roi": candidate.total.worst_season_roi,
+        "discovery_roi": candidate.discovery.roi,
+        "discovery_settled_bets": candidate.discovery.settled_bets,
+        "params": candidate.params,
     }
 
 
@@ -749,6 +1177,56 @@ def _profile_drift(
     if _float_drifted(profile.average_clv, candidate.average_clv, clv_tolerance):
         drift.append(f"average_clv changed:{profile.average_clv}->{candidate.average_clv}")
     return drift
+
+
+def _long_horizon_profile_drift(
+    profile: StrategyProfileSettings,
+    candidate: LongHorizonCandidate,
+    roi_tolerance: float,
+    clv_tolerance: float,
+) -> list[str]:
+    drift: list[str] = []
+    if profile.league_code.upper() != candidate.league:
+        drift.append(f"league_code changed:{profile.league_code}->{candidate.league}")
+    candidate_phase = str(candidate.params.get("season_phase") or "all").lower()
+    phases = _normalized_profile_phases(profile)
+    if "all" not in phases and candidate_phase not in phases:
+        drift.append(f"season_phases changed:{profile.season_phases}->[{candidate_phase}]")
+    if profile.settled_bets != candidate.total.settled_bets:
+        drift.append(f"settled_bets changed:{profile.settled_bets}->{candidate.total.settled_bets}")
+    if profile.positive_folds != candidate.total.positive_seasons:
+        drift.append(f"positive_folds changed:{profile.positive_folds}->{candidate.total.positive_seasons}")
+    if profile.fold_count != candidate.total.season_count:
+        drift.append(f"fold_count changed:{profile.fold_count}->{candidate.total.season_count}")
+    if profile.long_horizon_settled_bets != candidate.total.settled_bets:
+        drift.append(
+            f"long_horizon_settled_bets changed:"
+            f"{profile.long_horizon_settled_bets}->{candidate.total.settled_bets}"
+        )
+    if profile.holdout_settled_bets != candidate.holdout.settled_bets:
+        drift.append(f"holdout_settled_bets changed:{profile.holdout_settled_bets}->{candidate.holdout.settled_bets}")
+    if profile.holdout_positive_seasons != candidate.holdout.positive_seasons:
+        drift.append(
+            f"holdout_positive_seasons changed:"
+            f"{profile.holdout_positive_seasons}->{candidate.holdout.positive_seasons}"
+        )
+    if profile.holdout_season_count != candidate.holdout.season_count:
+        drift.append(f"holdout_season_count changed:{profile.holdout_season_count}->{candidate.holdout.season_count}")
+    if _float_drifted(profile.roi, candidate.total.roi, roi_tolerance):
+        drift.append(f"roi changed:{profile.roi}->{candidate.total.roi}")
+    if _float_drifted(profile.long_horizon_roi, candidate.total.roi, roi_tolerance):
+        drift.append(f"long_horizon_roi changed:{profile.long_horizon_roi}->{candidate.total.roi}")
+    if _float_drifted(profile.holdout_roi, candidate.holdout.roi, roi_tolerance):
+        drift.append(f"holdout_roi changed:{profile.holdout_roi}->{candidate.holdout.roi}")
+    if _float_drifted(profile.average_clv, candidate.total.average_clv, clv_tolerance):
+        drift.append(f"average_clv changed:{profile.average_clv}->{candidate.total.average_clv}")
+    if _float_drifted(profile.worst_season_roi, candidate.total.worst_season_roi, roi_tolerance):
+        drift.append(f"worst_season_roi changed:{profile.worst_season_roi}->{candidate.total.worst_season_roi}")
+    return drift
+
+
+def _normalized_profile_phases(profile: StrategyProfileSettings) -> set[str]:
+    return {phase.strip().lower() for phase in profile.season_phases if phase.strip()} or {"all"}
 
 
 def _float_drifted(left: float | None, right: float | None, tolerance: float) -> bool:

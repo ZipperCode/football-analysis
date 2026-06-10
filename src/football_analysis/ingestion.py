@@ -82,11 +82,14 @@ class IngestionService:
                     # A CLI/API override wins; otherwise each league controls its own quota footprint.
                     event_limit = max_events if max_events is not None else league.max_events
                     events = _limit_events(client.events(league=league.odds_api_slug), max_events=event_limit)
+                    event_ids: list[str] = []
                     for event in events:
                         self.repository.upsert_model("matches", event.id, event)
                         event_id = event.external_ids.get("odds_api_io_event")
                         if event_id:
-                            snapshots.extend(client.odds(event_id=event_id))
+                            event_ids.append(event_id)
+                    for batch in _chunks(event_ids, 10):
+                        snapshots.extend(client.odds_multi(event_ids=batch))
             else:
                 raise DataSourceError(f"unsupported_odds_source:{source}")
 
@@ -231,3 +234,8 @@ def _limit_events(events: list[Match], max_events: int | None) -> list[Match]:
     if max_events is None or max_events <= 0:
         return ordered
     return ordered[:max_events]
+
+
+def _chunks(items: list[str], size: int):
+    for index in range(0, len(items), size):
+        yield items[index : index + size]

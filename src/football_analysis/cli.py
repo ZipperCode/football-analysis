@@ -80,6 +80,260 @@ def performance(
     console.print(summary.model_dump())
 
 
+@app.command("live-audit")
+def live_audit(
+    include_past: bool = typer.Option(False, "--include-past", help="Include past matches in the audit."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.live_audit import audit_live_trading
+
+    result = audit_live_trading(service.repository, service.settings, include_past=include_past)
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
+@app.command("live-preflight")
+def live_preflight(
+    include_past: bool = typer.Option(False, "--include-past", help="Include past matches in the audit scope."),
+    min_bookmakers: int | None = typer.Option(None, "--min-bookmakers", help="Override live bookmaker minimum."),
+    min_profile_matches: int = typer.Option(1, "--min-profile-matches", help="Minimum ready matches per profile."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.live_preflight import run_live_preflight
+
+    result = run_live_preflight(
+        service.repository,
+        service.settings,
+        include_past=include_past,
+        min_bookmakers=min_bookmakers,
+        min_profile_matches=min_profile_matches,
+    )
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
+@app.command("live-review")
+def live_review(
+    include_paper: bool = typer.Option(True, "--include-paper/--real-only", help="Include paper observations in review."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.live_review import run_live_review
+
+    result = run_live_review(service.repository, service.settings, include_paper=include_paper)
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
+@app.command("live-decision")
+def live_decision(
+    include_past: bool = typer.Option(False, "--include-past", help="Include past matches in preflight scope."),
+    include_paper: bool = typer.Option(True, "--include-paper/--real-only", help="Include paper observations in review."),
+    full_profile_audit: bool = typer.Option(False, "--full-profile-audit", help="Run the full backtest profile audit."),
+    seasons: str = typer.Option("2122,2223,2324,2425,2526", "--seasons", help="Profile-audit seasons."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.live_decision import run_live_decision
+
+    result = run_live_decision(
+        service.repository,
+        service.settings,
+        include_past=include_past,
+        include_paper=include_paper,
+        seasons=_split_csv(seasons),
+        full_profile_audit=full_profile_audit,
+    )
+    if as_json:
+        _print_json(result)
+        return
+    _print_live_decision_summary(result)
+
+
+@app.command("live-refresh")
+def live_refresh(
+    date: str = typer.Option(..., "--date", help="Refresh date in YYYY-MM-DD."),
+    fixture_source: str = typer.Option("auto", "--fixture-source", help="Fixture ingestion source."),
+    odds_source: str = typer.Option("auto", "--odds-source", help="Odds ingestion source."),
+    league: str | None = typer.Option(None, "--league", help="Configured league code; defaults to active profiles."),
+    scope: str = typer.Option(
+        "active-profiles",
+        "--scope",
+        help="Refresh scope: active-profiles or live-leagues. Ignored when --league is set.",
+    ),
+    max_events: int | None = typer.Option(None, "--max-events", help="Maximum odds events per league."),
+    include_past: bool = typer.Option(False, "--include-past", help="Include past matches in post-refresh preflight."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Plan the refresh without spending remote quota."),
+    allow_odds_fallback: bool = typer.Option(
+        False,
+        "--allow-odds-fallback",
+        help="Allow auto odds refresh to spend fallback source quota after the preferred source is empty or fails.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.live_refresh import run_live_refresh
+
+    result = run_live_refresh(
+        service,
+        date=date,
+        fixture_source=fixture_source,
+        odds_source=odds_source,
+        league=league,
+        scope=scope,
+        max_events=max_events,
+        include_past=include_past,
+        dry_run=dry_run,
+        allow_odds_fallback=allow_odds_fallback,
+    )
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
+def _print_live_decision_summary(result: Any) -> None:
+    console.print(
+        f"Live decision: {result.status} "
+        f"ready={str(result.ready_to_bet).lower()} action={result.action}"
+    )
+    console.print(
+        "Components: "
+        + " ".join(f"{name}={status}" for name, status in result.components.items())
+    )
+    live_audit = result.preflight.live_audit
+    console.print(
+        "Candidates: "
+        f"matches={live_audit.total_matches} "
+        f"recommended={live_audit.recommended_count} "
+        f"paper={live_audit.paper_candidate_count} "
+        f"analysis_only={live_audit.analysis_only_count}"
+    )
+    console.print(
+        "Profiles/Odds: "
+        f"ready_profiles={result.odds_readiness.ready_profiles}/{result.odds_readiness.active_profiles} "
+        f"scoped_odds={result.odds_readiness.scoped_odds_snapshots}"
+    )
+
+    refresh_requirements = list(getattr(result.odds_readiness, "refresh_requirements", []) or [])
+    if refresh_requirements:
+        console.print("Odds refresh requirements:")
+        for item in refresh_requirements[:2]:
+            console.print(_refresh_requirement_line(item))
+        if len(refresh_requirements) > 2:
+            console.print(f"- ... {len(refresh_requirements) - 2} more")
+
+    if result.issues:
+        console.print("Issues:")
+        for issue in result.issues[:4]:
+            console.print(f"- {_clip(issue)}")
+        if len(result.issues) > 4:
+            console.print(f"- ... {len(result.issues) - 4} more")
+
+    closest = _closest_blocked_candidates(live_audit.items)
+    if closest:
+        console.print("Closest blocked candidates:")
+        for item in closest[:2]:
+            console.print(_candidate_summary_line(item))
+
+    blockers = sorted(live_audit.gate_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+    if blockers:
+        console.print("Top live gate blockers:")
+        for gate, count in blockers:
+            console.print(f"- {count}x {_clip(gate)}")
+
+
+def _closest_blocked_candidates(items: list[Any], limit: int = 3) -> list[Any]:
+    candidates = [
+        item
+        for item in items
+        if getattr(item, "live_gate_passed", False) is False
+        and getattr(item, "status", "") in {"paper_candidate", "recommended"}
+    ]
+    return sorted(
+        candidates,
+        key=lambda item: (
+            getattr(item, "status", "") != "paper_candidate",
+            -float(getattr(item, "value_score", 0.0) or 0.0),
+            float(getattr(item, "risk_score", 100.0) or 100.0),
+            -float(getattr(item, "confidence", 0.0) or 0.0),
+        ),
+    )[:limit]
+
+
+def _refresh_requirement_line(item: Any) -> str:
+    refresh_league = getattr(item, "refresh_league_code", None) or "-"
+    strategy_league = getattr(item, "strategy_league_code", None) or "-"
+    market = getattr(item, "market_type", None) or "-"
+    selections = ",".join(getattr(item, "selections", []) or ["-"])
+    issue = _first_issue(getattr(item, "issues", []) or [])
+    return (
+        f"- {refresh_league}({strategy_league}) {market} {selections} "
+        f"bookmakers>={getattr(item, 'required_bookmakers', '-')} "
+        f"ready={getattr(item, 'ready_matches', 0)} need={getattr(item, 'needed_ready_matches', 0)} "
+        f"issue={_clip(issue, 24)}"
+    )
+
+
+def _candidate_summary_line(item: Any) -> str:
+    market = getattr(item, "market_type", None) or "-"
+    selection = getattr(item, "selection", None) or "-"
+    home = getattr(item, "home_team", "-")
+    away = getattr(item, "away_team", "-")
+    gate = _first_issue(getattr(item, "gates_failed", []) or [])
+    return (
+        f"- {home} vs {away} {market} {selection} "
+        f"v={float(getattr(item, 'value_score', 0.0) or 0.0):.1f} "
+        f"r={float(getattr(item, 'risk_score', 0.0) or 0.0):.1f} "
+        f"c={float(getattr(item, 'confidence', 0.0) or 0.0):.3f} "
+        f"gate={_clip(gate, 26)}"
+    )
+
+
+def _first_issue(issues: list[str]) -> str:
+    return str(issues[0]) if issues else "-"
+
+
+def _clip(value: str, max_chars: int = 68) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3] + "..."
+
+
+@app.command("daily-ops")
+def daily_ops(
+    date: str = typer.Option(..., "--date", help="Operational date in YYYY-MM-DD."),
+    ingest_results: bool = typer.Option(False, "--ingest-results", help="Refresh finished results before settlement."),
+    source: str = typer.Option("api_football", "--source", help="Result ingestion source."),
+    league: str | None = typer.Option(None, "--league", help="Configured league code for result ingestion."),
+    include_past: bool = typer.Option(False, "--include-past", help="Include past matches in preflight scope."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.daily_ops import run_daily_ops
+
+    result = run_daily_ops(
+        service,
+        date=date,
+        ingest_results=ingest_results,
+        source=source,
+        league=league,
+        include_past=include_past,
+    )
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
 @app.command("sources")
 def sources(as_json: bool = typer.Option(False, "--json", help="Emit JSON for Hermes/tools.")) -> None:
     import asyncio
@@ -315,6 +569,54 @@ def backtest_portfolio(
     console.print(result.model_dump())
 
 
+@backtest_app.command("long-horizon-scan")
+def backtest_long_horizon_scan(
+    league: str = typer.Option("I1", "--league"),
+    family: str = typer.Option(
+        "asian-away",
+        "--family",
+        help="Strategy family: asian-away, asian-home, market-home, or market-away.",
+    ),
+    seasons: str = typer.Option("", "--seasons", help="Comma-separated seasons. Empty means all loaded seasons."),
+    discovery_start: str = typer.Option("1011", "--discovery-start"),
+    discovery_end: str = typer.Option("1819", "--discovery-end"),
+    holdout_start: str = typer.Option("1920", "--holdout-start"),
+    quick: bool = typer.Option(False, "--quick", help="Run the fixed regression candidate only."),
+    limit: int = typer.Option(10, "--limit"),
+    min_total_bets: int = typer.Option(180, "--min-total-bets"),
+    min_discovery_bets: int = typer.Option(80, "--min-discovery-bets"),
+    min_holdout_bets: int = typer.Option(80, "--min-holdout-bets"),
+    min_discovery_roi: float = typer.Option(0.08, "--min-discovery-roi"),
+    min_holdout_roi: float = typer.Option(0.08, "--min-holdout-roi"),
+    min_holdout_positive_seasons: int = typer.Option(4, "--min-holdout-positive-seasons"),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.strategy import long_horizon_scan
+
+    result = long_horizon_scan(
+        service.repository,
+        league=league,
+        family=family,
+        seasons=_split_csv(seasons) or None,
+        discovery_start=discovery_start,
+        discovery_end=discovery_end,
+        holdout_start=holdout_start,
+        quick=quick,
+        limit=limit,
+        min_total_bets=min_total_bets,
+        min_discovery_bets=min_discovery_bets,
+        min_holdout_bets=min_holdout_bets,
+        min_discovery_roi=min_discovery_roi,
+        min_holdout_roi=min_holdout_roi,
+        min_holdout_positive_seasons=min_holdout_positive_seasons,
+    )
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
 @backtest_app.command("profile-audit")
 def backtest_profile_audit(
     seasons: str = typer.Option("2122,2223,2324,2425,2526", "--seasons"),
@@ -361,7 +663,10 @@ def record_bet(
         stake_units=stake_units,
         platform=platform,
     )
-    recorded = get_service().record_bet(bet)
+    try:
+        recorded = get_service().record_bet(bet)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     if as_json:
         _print_json(recorded)
         return
@@ -371,7 +676,11 @@ def record_bet(
 @app.command("settle-bet")
 def settle_bet(
     bet_id: str,
-    result: str | None = typer.Option(None, "--result", help="Explicit settlement result: win, loss, or void."),
+    result: str | None = typer.Option(
+        None,
+        "--result",
+        help="Explicit settlement result: win, loss, void, half_win, or half_loss.",
+    ),
     closing_odds: float | None = typer.Option(None, "--closing-odds", help="Closing odds for CLV tracking."),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON for Hermes/tools."),
 ) -> None:
@@ -383,6 +692,20 @@ def settle_bet(
         _print_json(settled)
         return
     console.print(f"Settled bet {settled.id}: {settled.result} {settled.profit_units:+.2f}u")
+
+
+@app.command("settle-open-bets")
+def settle_open_bets(
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for Hermes/tools."),
+) -> None:
+    report = get_service().settle_open_bets()
+    if as_json:
+        _print_json(report)
+        return
+    console.print(
+        f"Settled {report.settled_count}/{report.scanned_count} open bets; "
+        f"skipped={report.skipped_count}, errors={report.error_count}"
+    )
 
 
 if __name__ == "__main__":

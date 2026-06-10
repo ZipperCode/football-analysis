@@ -21,6 +21,36 @@ class ThresholdSettings(BaseModel):
     max_stake_units: float = 1.5
 
 
+class LiveTradingSettings(BaseModel):
+    enabled: bool = True
+    min_bookmakers: int = Field(default=2, ge=1)
+    max_odds_age_minutes: int = Field(default=90, ge=1)
+    max_execution_odds_slippage: float = Field(default=0.01, ge=0.0, le=1.0)
+    min_data_quality: float = Field(default=0.82, ge=0.0, le=1.0)
+    min_value_score: float = Field(default=68.0, ge=0.0, le=100.0)
+    max_risk_score: float = Field(default=42.0, ge=0.0, le=100.0)
+    min_confidence: float = Field(default=0.58, ge=0.0, le=1.0)
+    min_edge: float = Field(default=0.025, ge=0.0)
+    min_long_horizon_bets: int = Field(default=150, ge=1)
+    min_long_horizon_roi: float = 0.08
+    min_holdout_bets: int = Field(default=80, ge=1)
+    min_holdout_roi: float = 0.08
+    min_holdout_positive_rate: float = Field(default=0.60, ge=0.0, le=1.0)
+    min_average_clv: float = 0.01
+    max_worst_season_roi: float = -0.35
+    max_recent_consecutive_losses: int = Field(default=3, ge=1)
+    rolling_window_settled_bets: int = Field(default=8, ge=1)
+    min_rolling_settled_bets: int = Field(default=5, ge=1)
+    max_rolling_loss_units: float = Field(default=2.0, ge=0.0)
+    min_rolling_roi: float = -0.25
+    review_min_settled_bets: int = Field(default=6, ge=1)
+    review_min_roi: float = 0.0
+    review_min_average_clv: float = 0.0
+    review_pause_roi: float = -0.15
+    max_stake_units_per_pick: float = Field(default=0.5, ge=0.0)
+    max_daily_stake_units: float = Field(default=1.2, ge=0.0)
+
+
 class TierPolicySettings(BaseModel):
     # Tier policies tighten or cap live recommendations after the base score is calculated.
     label: str = "live_scoring"
@@ -37,6 +67,7 @@ class SourceSettings(BaseModel):
     enabled: bool = True
     base_url: str
     api_key_env: str | None = None
+    bookmakers: list[str] = Field(default_factory=list)
     free_tier_note: str | None = None
 
 
@@ -105,6 +136,15 @@ class StrategyProfileSettings(BaseModel):
     fold_count: int = 0
     average_clv: float | None = None
     active: bool = True
+    live_enabled: bool = False
+    max_stake_units: float | None = Field(default=None, ge=0.0)
+    long_horizon_roi: float | None = None
+    long_horizon_settled_bets: int = 0
+    holdout_roi: float | None = None
+    holdout_settled_bets: int = 0
+    holdout_positive_seasons: int = 0
+    holdout_season_count: int = 0
+    worst_season_roi: float | None = None
 
 
 class TelegramSettings(BaseModel):
@@ -134,6 +174,7 @@ class Settings(BaseModel):
     leagues: list[LeagueSettings] = Field(default_factory=list)
     backtest: BacktestSettings = Field(default_factory=BacktestSettings)
     strategy_profiles: list[StrategyProfileSettings] = Field(default_factory=list)
+    live_trading: LiveTradingSettings = Field(default_factory=LiveTradingSettings)
     tier_policies: dict[str, TierPolicySettings] = Field(default_factory=dict)
     thresholds: ThresholdSettings = Field(default_factory=ThresholdSettings)
     data_sources: dict[str, SourceSettings] = Field(default_factory=dict)

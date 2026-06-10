@@ -3,9 +3,16 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, HTTPException
 
 from football_analysis.backtest import run_historical_backtest
+from football_analysis.daily_ops import DailyOpsReport, run_daily_ops
+from football_analysis.live_audit import LiveAuditReport, audit_live_trading
+from football_analysis.live_decision import LiveDecisionReport, run_live_decision
+from football_analysis.live_preflight import LivePreflightReport, run_live_preflight
+from football_analysis.live_refresh import LiveRefreshReport, run_live_refresh
+from football_analysis.live_review import LiveReviewReport, run_live_review
 from football_analysis.models import (
     BacktestSummary,
     BetLog,
+    BetSettlementReport,
     IngestionResult,
     MatchAnalysis,
     PerformanceByLeagueReport,
@@ -32,6 +39,94 @@ def picks_today(service: AnalysisService = Depends(get_api_service)) -> PickList
     return service.picks_today()
 
 
+@app.get("/live/audit", response_model=LiveAuditReport)
+def live_audit(
+    include_past: bool = False,
+    service: AnalysisService = Depends(get_api_service),
+) -> LiveAuditReport:
+    return audit_live_trading(service.repository, service.settings, include_past=include_past)
+
+
+@app.get("/live/preflight", response_model=LivePreflightReport)
+def live_preflight(
+    include_past: bool = False,
+    service: AnalysisService = Depends(get_api_service),
+) -> LivePreflightReport:
+    return run_live_preflight(service.repository, service.settings, include_past=include_past)
+
+
+@app.get("/live/review", response_model=LiveReviewReport)
+def live_review(
+    include_paper: bool = True,
+    service: AnalysisService = Depends(get_api_service),
+) -> LiveReviewReport:
+    return run_live_review(service.repository, service.settings, include_paper=include_paper)
+
+
+@app.get("/live/decision", response_model=LiveDecisionReport)
+def live_decision(
+    include_past: bool = False,
+    include_paper: bool = True,
+    full_profile_audit: bool = False,
+    seasons: str = "2122,2223,2324,2425,2526",
+    service: AnalysisService = Depends(get_api_service),
+) -> LiveDecisionReport:
+    return run_live_decision(
+        service.repository,
+        service.settings,
+        include_past=include_past,
+        include_paper=include_paper,
+        full_profile_audit=full_profile_audit,
+        seasons=[item.strip() for item in seasons.split(",") if item.strip()],
+    )
+
+
+@app.post("/live/refresh", response_model=LiveRefreshReport)
+def live_refresh(
+    date: str,
+    fixture_source: str = "auto",
+    odds_source: str = "auto",
+    league: str | None = None,
+    scope: str = "active-profiles",
+    max_events: int | None = None,
+    include_past: bool = False,
+    dry_run: bool = False,
+    allow_odds_fallback: bool = False,
+    service: AnalysisService = Depends(get_api_service),
+) -> LiveRefreshReport:
+    return run_live_refresh(
+        service,
+        date=date,
+        fixture_source=fixture_source,
+        odds_source=odds_source,
+        league=league,
+        scope=scope,
+        max_events=max_events,
+        include_past=include_past,
+        dry_run=dry_run,
+        allow_odds_fallback=allow_odds_fallback,
+    )
+
+
+@app.post("/ops/daily", response_model=DailyOpsReport)
+def daily_ops(
+    date: str,
+    ingest_results: bool = False,
+    source: str = "api_football",
+    league: str | None = None,
+    include_past: bool = False,
+    service: AnalysisService = Depends(get_api_service),
+) -> DailyOpsReport:
+    return run_daily_ops(
+        service,
+        date=date,
+        ingest_results=ingest_results,
+        source=source,
+        league=league,
+        include_past=include_past,
+    )
+
+
 @app.get("/matches/{match_id}/analysis", response_model=MatchAnalysis)
 def match_analysis(match_id: str, service: AnalysisService = Depends(get_api_service)) -> MatchAnalysis:
     try:
@@ -42,7 +137,10 @@ def match_analysis(match_id: str, service: AnalysisService = Depends(get_api_ser
 
 @app.post("/bets", response_model=BetLog)
 def create_bet(bet: BetLog, service: AnalysisService = Depends(get_api_service)) -> BetLog:
-    return service.record_bet(bet)
+    try:
+        return service.record_bet(bet)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/bets/{bet_id}/settle", response_model=BetLog)
@@ -58,6 +156,11 @@ def settle_bet(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/bets/settle-open", response_model=BetSettlementReport)
+def settle_open_bets(service: AnalysisService = Depends(get_api_service)) -> BetSettlementReport:
+    return service.settle_open_bets()
 
 
 @app.get("/performance", response_model=PerformanceSummary)
