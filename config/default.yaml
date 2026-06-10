@@ -1,0 +1,101 @@
+app:
+  name: football-analysis
+  timezone: Asia/Shanghai
+  fixture_mode: true
+  daily_pick_limit: 5
+  markets:
+    - 1x2
+    - asian_handicap
+    - over_under
+  risk_notice: "仅供赛前分析，不保证收益；请自行承担风险，并严格控制最大仓位。"
+
+storage:
+  database_url: sqlite:///./data/football_analysis.db
+
+ingestion:
+  request_timeout_seconds: 12.0
+  max_retries: 2
+  default_lookahead_days: 2
+  default_lookback_days: 0
+  store_raw_payloads: true
+
+cache:
+  enabled: true
+  default_ttl_seconds: 10800
+  odds_ttl_seconds: 10800
+  fixtures_ttl_seconds: 21600
+  historical_ttl_seconds: 604800
+
+quota:
+  providers:
+    api_football:
+      requests_per_day: 100
+    odds_api_io:
+      requests_per_hour: 100
+    football_data_org:
+      requests_per_minute: 10
+    thesportsdb:
+      requests_per_minute: 30
+    football_data_uk:
+      requests_per_day: 200
+
+leagues:
+  - code: EPL
+    name: Premier League
+    country: England
+    season: 2025
+    api_football_league_id: 39
+    odds_api_slug: england-premier-league
+    football_data_org_code: PL
+    football_data_uk_code: E0
+  - code: LALIGA
+    name: La Liga
+    country: Spain
+    season: 2025
+    api_football_league_id: 140
+    odds_api_slug: spain-la-liga
+    football_data_org_code: PD
+    football_data_uk_code: SP1
+
+backtest:
+  data_dir: data/historical
+  default_league: E0
+  default_season: "2526"
+
+thresholds:
+  min_data_quality: 0.70
+  min_value_score: 62.0
+  max_risk_score: 55.0
+  max_stake_units: 1.5
+
+data_sources:
+  api_football:
+    name: API-FOOTBALL/API-SPORTS
+    enabled: true
+    base_url: https://v3.football.api-sports.io
+    api_key_env: API_FOOTBALL_KEY
+    free_tier_note: "100 requests/day on the free plan according to PLAN.md."
+  odds_api_io:
+    name: Odds-API.io
+    enabled: true
+    base_url: https://odds-api.io/api/v3
+    api_key_env: ODDS_API_IO_KEY
+    free_tier_note: "100 requests/hour on the free plan according to PLAN.md."
+  football_data_org:
+    name: football-data.org
+    enabled: true
+    base_url: https://api.football-data.org/v4
+    api_key_env: FOOTBALL_DATA_ORG_TOKEN
+  thesportsdb:
+    name: TheSportsDB
+    enabled: true
+    base_url: https://www.thesportsdb.com/api/v1/json
+    api_key_env: THESPORTSDB_API_KEY
+  football_data_uk:
+    name: football-data.co.uk
+    enabled: true
+    base_url: https://www.football-data.co.uk
+
+telegram:
+  bot_token_env: TELEGRAM_BOT_TOKEN
+  chat_id_env: TELEGRAM_CHAT_ID
