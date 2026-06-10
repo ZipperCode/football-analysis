@@ -21,6 +21,17 @@ class ThresholdSettings(BaseModel):
     max_stake_units: float = 1.5
 
 
+class TierPolicySettings(BaseModel):
+    # Tier policies tighten or cap live recommendations after the base score is calculated.
+    label: str = "live_scoring"
+    min_data_quality: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_value_score: float | None = Field(default=None, ge=0.0, le=100.0)
+    max_risk_score: float | None = Field(default=None, ge=0.0, le=100.0)
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_stake_units: float | None = Field(default=None, ge=0.0)
+    min_bookmakers: int | None = Field(default=None, ge=1)
+
+
 class SourceSettings(BaseModel):
     name: str
     enabled: bool = True
@@ -64,12 +75,36 @@ class LeagueSettings(BaseModel):
     odds_api_slug: str | None = None
     football_data_org_code: str | None = None
     football_data_uk_code: str | None = None
+    # League tier fields keep production picks separate from paper strategy incubation.
+    aliases: list[str] = Field(default_factory=list)
+    tier: str = Field(default="secondary_professional")
+    analysis_depth: str = Field(default="standard")
+    strategy_mode: str = Field(default="paper")
+    min_bookmakers: int = Field(default=2, ge=1)
+    max_events: int | None = Field(default=20, ge=1)
+    paper_only: bool = True
 
 
 class BacktestSettings(BaseModel):
     data_dir: str = "data/historical"
     default_league: str = "E0"
     default_season: str = "2526"
+
+
+class StrategyProfileSettings(BaseModel):
+    id: str
+    name: str
+    league_code: str
+    market_type: str
+    selections: list[str] = Field(default_factory=list)
+    season_phases: list[str] = Field(default_factory=lambda: ["all"])
+    stability_label: str
+    roi: float | None = None
+    settled_bets: int = 0
+    positive_folds: int = 0
+    fold_count: int = 0
+    average_clv: float | None = None
+    active: bool = True
 
 
 class TelegramSettings(BaseModel):
@@ -98,6 +133,8 @@ class Settings(BaseModel):
     quota: QuotaSettings = Field(default_factory=QuotaSettings)
     leagues: list[LeagueSettings] = Field(default_factory=list)
     backtest: BacktestSettings = Field(default_factory=BacktestSettings)
+    strategy_profiles: list[StrategyProfileSettings] = Field(default_factory=list)
+    tier_policies: dict[str, TierPolicySettings] = Field(default_factory=dict)
     thresholds: ThresholdSettings = Field(default_factory=ThresholdSettings)
     data_sources: dict[str, SourceSettings] = Field(default_factory=dict)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)

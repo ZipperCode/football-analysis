@@ -68,8 +68,12 @@ def analyze(match_id: str, as_json: bool = typer.Option(False, "--json", help="E
 
 
 @app.command("performance")
-def performance(as_json: bool = typer.Option(False, "--json", help="Emit JSON for Hermes/tools.")) -> None:
-    summary = get_service().performance()
+def performance(
+    by_league: bool = typer.Option(False, "--by-league", help="Group performance by configured league and tier."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for Hermes/tools."),
+) -> None:
+    service = get_service()
+    summary = service.performance_by_league() if by_league else service.performance()
     if as_json:
         _print_json(summary)
         return
@@ -86,6 +90,44 @@ def sources(as_json: bool = typer.Option(False, "--json", help="Emit JSON for He
         return
     for item in result:
         console.print(f"{item.source_id}: {item.state.value} - {item.detail}")
+
+
+@app.command("odds-readiness")
+def odds_readiness(
+    min_bookmakers: int = typer.Option(2, "--min-bookmakers", help="Minimum bookmakers per match/market group."),
+    min_profile_matches: int = typer.Option(1, "--min-profile-matches", help="Minimum ready matches per profile."),
+    include_past: bool = typer.Option(False, "--include-past", help="Include past matches in the audit scope."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.odds_readiness import audit_odds_readiness
+
+    result = audit_odds_readiness(
+        service.repository,
+        service.settings,
+        min_bookmakers=min_bookmakers,
+        min_profile_matches=min_profile_matches,
+        include_past=include_past,
+    )
+    if as_json:
+        _print_json(result)
+        return
+
+    table = Table(title=f"Odds readiness: {result.status}")
+    table.add_column("Profile")
+    table.add_column("Status")
+    table.add_column("Ready")
+    table.add_column("Matching")
+    table.add_column("Issues")
+    for profile in result.profiles:
+        table.add_row(
+            profile.profile_id,
+            profile.status,
+            str(profile.ready_matches),
+            str(profile.matching_matches),
+            ", ".join(profile.issues) or "-",
+        )
+    console.print(table)
 
 
 @db_app.command("init")
@@ -113,14 +155,38 @@ def ingest_fixtures(
     console.print(result.model_dump())
 
 
+@ingest_app.command("results")
+def ingest_results(
+    date: str = typer.Option(..., "--date", help="Date in YYYY-MM-DD."),
+    source: str = typer.Option("api_football", "--source"),
+    league: str | None = typer.Option(None, "--league", help="Configured league code, e.g. EPL."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    result = get_service().ingestion.ingest_results(date=date, source=source, league_code=league)
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
 @ingest_app.command("odds")
 def ingest_odds(
     date: str | None = typer.Option(None, "--date", help="Date in YYYY-MM-DD."),
     source: str = typer.Option("api_football", "--source"),
     league: str | None = typer.Option(None, "--league", help="Configured league code, e.g. EPL."),
+    max_events: int | None = typer.Option(
+        None,
+        "--max-events",
+        help="Maximum Odds-API.io events to price. Defaults to the configured league limit.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
 ) -> None:
-    result = get_service().ingestion.ingest_odds(date=date, source=source, league_code=league)
+    result = get_service().ingestion.ingest_odds(
+        date=date,
+        source=source,
+        league_code=league,
+        max_events=max_events,
+    )
     if as_json:
         _print_json(result)
         return
@@ -179,6 +245,7 @@ def backtest_optimize(
     train_seasons: str = typer.Option("2122,2223,2324,2425", "--train-seasons"),
     test_seasons: str = typer.Option("2526", "--test-seasons"),
     min_test_bets: int = typer.Option(80, "--min-test-bets"),
+    season_phases: str = typer.Option("all", "--season-phases", help="Comma-separated phases: all, early, middle, late."),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
 ) -> None:
     service = get_service()
@@ -190,6 +257,7 @@ def backtest_optimize(
         train_seasons=_split_csv(train_seasons),
         test_seasons=_split_csv(test_seasons),
         min_test_bets=min_test_bets,
+        season_phases=_split_csv(season_phases),
     )
     if as_json:
         _print_json(result)
@@ -203,6 +271,7 @@ def backtest_walk_forward(
     seasons: str = typer.Option("2122,2223,2324,2425,2526", "--seasons"),
     min_train_seasons: int = typer.Option(2, "--min-train-seasons"),
     min_test_bets: int = typer.Option(30, "--min-test-bets"),
+    season_phases: str = typer.Option("all", "--season-phases", help="Comma-separated phases: all, early, middle, late."),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
 ) -> None:
     service = get_service()
@@ -214,6 +283,54 @@ def backtest_walk_forward(
         seasons=_split_csv(seasons),
         min_train_seasons=min_train_seasons,
         min_test_bets=min_test_bets,
+        season_phases=_split_csv(season_phases),
+    )
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
+@backtest_app.command("portfolio")
+def backtest_portfolio(
+    seasons: str = typer.Option("2122,2223,2324,2425,2526", "--seasons"),
+    leagues: str = typer.Option("E0,SP1,D1,I1,F1", "--leagues", help="Comma-separated league codes for phase scans."),
+    season_phases: str = typer.Option("all,early,middle,late", "--season-phases", help="Comma-separated phases for phase scans."),
+    scan_phases: bool = typer.Option(False, "--scan-phases", help="Run league/phase optimization scans."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.strategy import build_strategy_portfolio
+
+    result = build_strategy_portfolio(
+        service.repository,
+        seasons=_split_csv(seasons),
+        leagues=_split_csv(leagues),
+        season_phases=_split_csv(season_phases),
+        scan_phases=scan_phases,
+    )
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
+@backtest_app.command("profile-audit")
+def backtest_profile_audit(
+    seasons: str = typer.Option("2122,2223,2324,2425,2526", "--seasons"),
+    roi_tolerance: float = typer.Option(0.002, "--roi-tolerance"),
+    clv_tolerance: float = typer.Option(0.002, "--clv-tolerance"),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.strategy import audit_strategy_profiles
+
+    result = audit_strategy_profiles(
+        service.repository,
+        configured_profiles=service.settings.strategy_profiles,
+        seasons=_split_csv(seasons),
+        roi_tolerance=roi_tolerance,
+        clv_tolerance=clv_tolerance,
     )
     if as_json:
         _print_json(result)
@@ -249,6 +366,23 @@ def record_bet(
         _print_json(recorded)
         return
     console.print(f"Recorded bet {recorded.id}")
+
+
+@app.command("settle-bet")
+def settle_bet(
+    bet_id: str,
+    result: str | None = typer.Option(None, "--result", help="Explicit settlement result: win, loss, or void."),
+    closing_odds: float | None = typer.Option(None, "--closing-odds", help="Closing odds for CLV tracking."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for Hermes/tools."),
+) -> None:
+    try:
+        settled = get_service().settle_bet(bet_id, result=result, closing_odds=closing_odds)
+    except (KeyError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if as_json:
+        _print_json(settled)
+        return
+    console.print(f"Settled bet {settled.id}: {settled.result} {settled.profit_units:+.2f}u")
 
 
 if __name__ == "__main__":

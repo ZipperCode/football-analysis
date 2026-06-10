@@ -48,6 +48,14 @@ leagues:
     odds_api_slug: england-premier-league
     football_data_org_code: PL
     football_data_uk_code: E0
+    aliases:
+      - England - Premier League
+    tier: elite_club
+    analysis_depth: deep
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: false
   - code: LALIGA
     name: La Liga
     country: Spain
@@ -56,11 +64,291 @@ leagues:
     odds_api_slug: spain-la-liga
     football_data_org_code: PD
     football_data_uk_code: SP1
+    aliases:
+      - Spain - La Liga
+    tier: elite_club
+    analysis_depth: deep
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: false
+  - code: SERIE_A
+    name: Serie A
+    country: Italy
+    season: 2025
+    api_football_league_id: 135
+    odds_api_slug: italy-serie-a
+    football_data_org_code: SA
+    football_data_uk_code: I1
+    aliases:
+      - Italy - Serie A
+    tier: elite_club
+    analysis_depth: deep
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: false
+  - code: BUNDESLIGA
+    name: Bundesliga
+    country: Germany
+    season: 2025
+    api_football_league_id: 78
+    football_data_org_code: BL1
+    football_data_uk_code: D1
+    aliases:
+      - Germany - Bundesliga
+    tier: elite_club
+    analysis_depth: deep
+    strategy_mode: paper
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: true
+  - code: LIGUE_1
+    name: Ligue 1
+    country: France
+    season: 2025
+    api_football_league_id: 61
+    football_data_org_code: FL1
+    football_data_uk_code: F1
+    aliases:
+      - France - Ligue 1
+    tier: elite_club
+    analysis_depth: deep
+    strategy_mode: paper
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: true
+  - code: UCL
+    name: UEFA Champions League
+    country: World
+    season: 2025
+    api_football_league_id: 2
+    aliases:
+      - World - UEFA Champions League
+    tier: major_tournament
+    analysis_depth: deep
+    strategy_mode: paper
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: true
+  - code: WORLD_CUP
+    name: FIFA World Cup
+    country: World
+    season: 2026
+    api_football_league_id: 1
+    odds_api_slug: international-fifa-world-cup
+    aliases:
+      - World - FIFA World Cup
+    tier: major_tournament
+    analysis_depth: deep
+    strategy_mode: paper
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: true
+  - code: EURO
+    name: Euro Championship
+    country: World
+    season: 2024
+    api_football_league_id: 4
+    aliases:
+      - World - Euro Championship
+    tier: major_tournament
+    analysis_depth: deep
+    strategy_mode: paper
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: true
+  - code: COPA_AMERICA
+    name: Copa America
+    country: World
+    season: 2024
+    api_football_league_id: 9
+    aliases:
+      - World - Copa America
+    tier: major_tournament
+    analysis_depth: deep
+    strategy_mode: paper
+    min_bookmakers: 2
+    max_events: 20
+    paper_only: true
+  - code: J1
+    name: J1 League
+    country: Japan
+    season: 2026
+    api_football_league_id: 98
+    aliases:
+      - Japan - J1 League
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: A_LEAGUE
+    name: A-League
+    country: Australia
+    season: 2025
+    api_football_league_id: 188
+    odds_api_slug: australia-a-league
+    aliases:
+      - Australia - A-League
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: K_LEAGUE_1
+    name: K League 1
+    country: South-Korea
+    season: 2026
+    api_football_league_id: 292
+    odds_api_slug: republic-of-korea-k-league-1
+    aliases:
+      - Republic of Korea - K-League 1
+      - South-Korea - K League 1
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: MLS
+    name: Major League Soccer
+    country: USA
+    season: 2026
+    api_football_league_id: 253
+    odds_api_slug: usa-mls
+    aliases:
+      - USA - Major League Soccer
+      - USA - MLS
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: BRA_SERIE_A
+    name: Brasileiro Serie A
+    country: Brazil
+    odds_api_slug: brazil-brasileiro-serie-a
+    aliases:
+      - Brazil - Brasileiro Serie A
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: ARG_PRIMERA
+    name: Liga Profesional Argentina
+    country: Argentina
+    season: 2026
+    api_football_league_id: 128
+    aliases:
+      - Argentina - Liga Profesional Argentina
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: LIGA_MX
+    name: Liga MX
+    country: Mexico
+    season: 2025
+    api_football_league_id: 262
+    aliases:
+      - Mexico - Liga MX
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+
+tier_policies:
+  elite_club:
+    label: live_scoring
+  secondary_professional:
+    label: secondary_live_small_stake
+    min_data_quality: 0.75
+    min_value_score: 68.0
+    max_risk_score: 45.0
+    min_confidence: 0.58
+    max_stake_units: 0.5
+    min_bookmakers: 2
+  major_tournament:
+    label: tournament_live_small_stake
+    min_data_quality: 0.78
+    min_value_score: 70.0
+    max_risk_score: 42.0
+    min_confidence: 0.60
+    max_stake_units: 0.5
+    min_bookmakers: 2
 
 backtest:
   data_dir: data/historical
   default_league: E0
   default_season: "2526"
+
+strategy_profiles:
+  - id: e0_all_home_robust
+    name: E0 all-season home value
+    league_code: E0
+    market_type: 1x2
+    selections:
+      - HOME
+    season_phases:
+      - all
+    stability_label: robust
+    roi: 0.0502
+    settled_bets: 176
+    positive_folds: 3
+    fold_count: 3
+    average_clv: 0.0182
+  - id: i1_all_ah_away_high_yield
+    name: I1 all-season AH away value
+    league_code: I1
+    market_type: asian_handicap
+    selections:
+      - AH_AWAY
+    season_phases:
+      - all
+    stability_label: high_yield
+    roi: 0.1195
+    settled_bets: 180
+    positive_folds: 2
+    fold_count: 3
+    average_clv: 0.0528
+  - id: i1_middle_ah_away_supplemental
+    name: I1 middle-season AH away overlay
+    league_code: I1
+    market_type: asian_handicap
+    selections:
+      - AH_AWAY
+    season_phases:
+      - middle
+    stability_label: supplemental
+    roi: 0.1753
+    settled_bets: 70
+    positive_folds: 3
+    fold_count: 3
+    average_clv: 0.0479
+  - id: i1_late_ah_away_supplemental
+    name: I1 late-season AH away overlay
+    league_code: I1
+    market_type: asian_handicap
+    selections:
+      - AH_AWAY
+    season_phases:
+      - late
+    stability_label: supplemental
+    roi: 0.1254
+    settled_bets: 71
+    positive_folds: 2
+    fold_count: 3
+    average_clv: 0.0501
 
 thresholds:
   min_data_quality: 0.70
@@ -78,7 +366,7 @@ data_sources:
   odds_api_io:
     name: Odds-API.io
     enabled: true
-    base_url: https://odds-api.io/api/v3
+    base_url: https://api.odds-api.io/v3
     api_key_env: ODDS_API_IO_KEY
     free_tier_note: "100 requests/hour on the free plan according to PLAN.md."
   football_data_org:

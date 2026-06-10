@@ -50,6 +50,7 @@ def map_matches(payload: dict[str, Any]) -> list[Match]:
         home = item.get("homeTeam") or {}
         away = item.get("awayTeam") or {}
         competition = item.get("competition") or {}
+        full_time_score = (item.get("score") or {}).get("fullTime") or {}
         matches.append(
             Match(
                 id=f"football_data_org:{match_id}",
@@ -59,6 +60,8 @@ def map_matches(payload: dict[str, Any]) -> list[Match]:
                 kickoff_at=_parse_datetime(str(item.get("utcDate"))),
                 status=_map_status(str(item.get("status") or "SCHEDULED")),
                 data_completeness=0.62,
+                home_score=_safe_int(full_time_score.get("home")),
+                away_score=_safe_int(full_time_score.get("away")),
                 external_ids={
                     "football_data_org_match": match_id,
                     "football_data_org_competition": str(competition.get("code") or competition.get("id") or ""),
@@ -82,3 +85,10 @@ def _map_status(status: str) -> MatchStatus:
     if status in {"POSTPONED", "SUSPENDED", "CANCELLED"}:
         return MatchStatus.postponed
     return MatchStatus.scheduled
+
+
+def _safe_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

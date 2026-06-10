@@ -13,12 +13,14 @@ class OddsApiIoClient:
     def __init__(self, context: ClientContext):
         self.context = context
 
-    def events(self, sport: str = "soccer") -> list[Match]:
-        payload = self._get("/events", {"sport": sport})
+    def events(self, sport: str = "football", league: str | None = None) -> list[Match]:
+        payload = self._get("/events", {"sport": sport, "league": league})
         return map_events(payload)
 
-    def odds(self, event_id: str | None = None, sport: str = "soccer") -> list[OddsSnapshot]:
-        params = {"sport": sport, "eventId": event_id}
+    def odds(self, event_id: str, sport: str = "football", bookmakers: str = "Bet365,1xbet") -> list[OddsSnapshot]:
+        if not event_id:
+            raise DataSourceError("missing_event_id:odds_api_io")
+        params = {"sport": sport, "eventId": event_id, "bookmakers": bookmakers}
         payload = self._get("/odds", params)
         return map_odds(payload)
 
@@ -39,7 +41,7 @@ class OddsApiIoClient:
 
 
 def map_events(payload: Any) -> list[Match]:
-    rows = payload.get("data") if isinstance(payload, dict) else payload
+    rows = _payload_rows(payload)
     matches: list[Match] = []
     for item in rows or []:
         if not isinstance(item, dict):
@@ -49,13 +51,16 @@ def map_events(payload: Any) -> list[Match]:
             continue
         home = item.get("home") or item.get("homeTeam") or item.get("home_team") or "Unknown Home"
         away = item.get("away") or item.get("awayTeam") or item.get("away_team") or "Unknown Away"
-        starts = item.get("startsAt") or item.get("commence_time") or item.get("startTime")
+        starts = item.get("startsAt") or item.get("commence_time") or item.get("startTime") or item.get("date")
         if not starts:
             continue
+        league = item.get("league") or item.get("competition") or "Unknown"
+        if isinstance(league, dict):
+            league = league.get("name") or league.get("id") or "Unknown"
         matches.append(
             Match(
                 id=f"odds_api_io:{event_id}",
-                league=str(item.get("league") or item.get("competition") or "Unknown"),
+                league=str(league),
                 home_team=str(home),
                 away_team=str(away),
                 kickoff_at=_parse_datetime(str(starts)),
@@ -67,7 +72,7 @@ def map_events(payload: Any) -> list[Match]:
 
 
 def map_odds(payload: Any) -> list[OddsSnapshot]:
-    rows = payload.get("data") if isinstance(payload, dict) else payload
+    rows = _payload_rows(payload)
     snapshots: list[OddsSnapshot] = []
     for event in rows or []:
         if not isinstance(event, dict):
@@ -88,21 +93,18 @@ def map_odds(payload: Any) -> list[OddsSnapshot]:
                 market_type = _market_type(market_key)
                 if market_type is None:
                     continue
-                outcomes = market.get("outcomes") or market.get("values") or []
-                odds: dict[str, float] = {}
-                for outcome in outcomes:
-                    if not isinstance(outcome, dict):
-                        continue
-                    selection = _selection(str(outcome.get("name") or outcome.get("value") or ""))
-                    price = _safe_float(outcome.get("price") or outcome.get("odd") or outcome.get("odds"))
-                    if selection and price:
-                        odds[selection] = price
+                odds, line = _extract_market_odds(
+                    market.get("outcomes") or market.get("values") or market.get("odds") or [],
+                    market_type=market_type,
+                )
                 if odds:
+                    line_key = line or "main"
                     snapshots.append(
                         OddsSnapshot(
-                            id=f"odds_api_io:{event_id}:{bookmaker_name}:{market_type.value}",
+                            id=f"odds_api_io:{event_id}:{bookmaker_name}:{market_type.value}:{line_key}",
                             match_id=f"odds_api_io:{event_id}",
                             market_type=market_type,
+                            line=line,
                             source="odds_api_io",
                             bookmaker=bookmaker_name,
                             collected_at=datetime.utcnow(),
@@ -115,13 +117,63 @@ def map_odds(payload: Any) -> list[OddsSnapshot]:
 
 def _market_type(value: str) -> MarketType | None:
     lowered = value.lower()
-    if lowered in {"h2h", "1x2"} or "match" in lowered:
+    if lowered in {"h2h", "1x2", "ml", "moneyline"} or "match" in lowered:
         return MarketType.one_x_two
     if "spread" in lowered or "handicap" in lowered:
         return MarketType.asian_handicap
     if "total" in lowered or "over" in lowered:
         return MarketType.over_under
     return None
+
+
+def _payload_rows(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return [data]
+    if payload.get("id") or payload.get("eventId"):
+        return [payload]
+    return []
+
+
+def _extract_market_odds(outcomes: Any, market_type: MarketType) -> tuple[dict[str, float], str | None]:
+    rows = outcomes if isinstance(outcomes, list) else [outcomes]
+    odds: dict[str, float] = {}
+    line: str | None = None
+    for outcome in rows:
+        if not isinstance(outcome, dict):
+            continue
+        line = line or _line_value(outcome)
+        _add_named_outcome(odds, outcome)
+        _add_compact_outcomes(odds, outcome, market_type)
+    return odds, line
+
+
+def _add_named_outcome(odds: dict[str, float], outcome: dict[str, Any]) -> None:
+    selection = _selection(str(outcome.get("name") or outcome.get("value") or ""))
+    price = _safe_float(outcome.get("price") or outcome.get("odd") or outcome.get("odds"))
+    if selection and price:
+        odds[selection] = price
+
+
+def _add_compact_outcomes(odds: dict[str, float], outcome: dict[str, Any], market_type: MarketType) -> None:
+    mapping = {"home": "HOME", "away": "AWAY", "draw": "DRAW"}
+    if market_type == MarketType.over_under:
+        mapping = {"over": "OVER", "under": "UNDER"}
+    for key, selection in mapping.items():
+        price = _safe_float(outcome.get(key))
+        if price:
+            odds[selection] = price
+
+
+def _line_value(outcome: dict[str, Any]) -> str | None:
+    value = outcome.get("point") or outcome.get("hdp") or outcome.get("handicap") or outcome.get("total")
+    return str(value) if value is not None else None
 
 
 def _selection(value: str) -> str:

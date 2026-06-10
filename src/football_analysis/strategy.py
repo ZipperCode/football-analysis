@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from datetime import datetime
 from itertools import product
 from statistics import mean
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from football_analysis.contracts import HistoricalMatchRow
 from football_analysis.db import StructuredRepository
+from football_analysis.settings import StrategyProfileSettings
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,7 @@ class StrategyParams:
     min_strength: float = 0.0
     min_prob_gap: float = 0.04
     selection_bias: str = "all"
+    season_phase: str = "all"
 
 
 class StrategyResult(BaseModel):
@@ -52,6 +55,50 @@ class WalkForwardResult(BaseModel):
     positive_folds: int
     fold_count: int
     average_clv: float | None
+
+
+class StrategyPortfolioItem(BaseModel):
+    name: str
+    league: str
+    strategy_type: str
+    season_phases: list[str]
+    seasons: list[str]
+    settled_bets: int
+    profit_units: float
+    roi: float | None
+    positive_folds: int
+    fold_count: int
+    average_clv: float | None
+    worst_fold_roi: float | None
+    stability_label: str
+    fallback_folds: int
+    selected_by: list[str]
+    params: dict
+    folds: list[StrategyResult]
+
+
+class StrategyPortfolioReport(BaseModel):
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    seasons: list[str]
+    leagues: list[str]
+    season_phases: list[str]
+    scan_phases: bool = False
+    candidates: list[StrategyPortfolioItem]
+
+
+class StrategyProfileAuditItem(BaseModel):
+    profile_id: str
+    status: str
+    message: str
+    configured: dict | None = None
+    portfolio: dict | None = None
+
+
+class StrategyProfileAuditReport(BaseModel):
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    seasons: list[str]
+    passed: bool
+    items: list[StrategyProfileAuditItem]
 
 
 @dataclass
@@ -100,8 +147,10 @@ def optimize_strategy(
     train_seasons: list[str],
     test_seasons: list[str],
     min_test_bets: int = 80,
+    season_phases: list[str] | None = None,
 ) -> StrategyResult:
     all_rows = _load_rows(repository, league, sorted(set(train_seasons + test_seasons)))
+    phases = _normalize_season_phases(season_phases)
     grid = [
         StrategyParams(
             mode=mode,
@@ -115,6 +164,7 @@ def optimize_strategy(
             min_strength=min_strength,
             min_prob_gap=min_prob_gap,
             selection_bias=selection_bias,
+            season_phase=season_phase,
         )
         for (
             mode,
@@ -128,6 +178,7 @@ def optimize_strategy(
             min_strength,
             min_prob_gap,
             selection_bias,
+            season_phase,
         ) in product(
             ["market_value", "asian_value"],
             [0.015, 0.025, 0.04],
@@ -140,6 +191,7 @@ def optimize_strategy(
             [0.0, 0.3],
             [0.02],
             ["home", "away", "ah_home", "ah_away"],
+            phases,
         )
         if (
             (mode == "asian_value" and selection_bias in {"ah_home", "ah_away"})
@@ -160,7 +212,7 @@ def optimize_strategy(
             best = (score, params, train)
 
     if best is None:
-        fallback = StrategyParams()
+        fallback = StrategyParams(season_phase=phases[0])
         return run_strategy_on_rows(all_rows, league, test_seasons, fallback).model_copy(
             update={
                 "train_seasons": train_seasons,
@@ -196,12 +248,22 @@ def walk_forward_optimize(
     seasons: list[str],
     min_train_seasons: int = 2,
     min_test_bets: int = 30,
+    season_phases: list[str] | None = None,
 ) -> WalkForwardResult:
     folds: list[StrategyResult] = []
     for index in range(min_train_seasons, len(seasons)):
         train = seasons[:index]
         test = [seasons[index]]
-        folds.append(optimize_strategy(repository, league, train, test, min_test_bets=min_test_bets))
+        folds.append(
+            optimize_strategy(
+                repository,
+                league,
+                train,
+                test,
+                min_test_bets=min_test_bets,
+                season_phases=season_phases,
+            )
+        )
     settled = sum(fold.settled_bets for fold in folds)
     profit = sum(fold.profit_units for fold in folds)
     roi = profit / settled if settled else None
@@ -218,6 +280,125 @@ def walk_forward_optimize(
         fold_count=len(folds),
         average_clv=round(average_clv, 4) if average_clv is not None else None,
     )
+
+
+def build_strategy_portfolio(
+    repository: StructuredRepository,
+    seasons: list[str],
+    leagues: list[str] | None = None,
+    season_phases: list[str] | None = None,
+    scan_phases: bool = False,
+) -> StrategyPortfolioReport:
+    selected_leagues = _normalize_leagues(leagues)
+    selected_phases = _normalize_season_phases(season_phases)
+    if scan_phases:
+        candidates = _scan_phase_candidates(repository, seasons, selected_leagues, selected_phases)
+        candidates.sort(key=_portfolio_sort_key, reverse=True)
+        return StrategyPortfolioReport(
+            seasons=seasons,
+            leagues=selected_leagues,
+            season_phases=selected_phases,
+            scan_phases=True,
+            candidates=candidates,
+        )
+
+    e0_all = walk_forward_optimize(
+        repository,
+        league="E0",
+        seasons=seasons,
+        min_train_seasons=2,
+        min_test_bets=30,
+        season_phases=["all"],
+    )
+    i1_all = walk_forward_optimize(
+        repository,
+        league="I1",
+        seasons=seasons,
+        min_train_seasons=2,
+        min_test_bets=30,
+        season_phases=["all"],
+    )
+    i1_middle_overlay = _phase_overlay_walk_forward(repository, i1_all, seasons, "middle")
+    i1_late_overlay = _phase_overlay_walk_forward(repository, i1_all, seasons, "late")
+    candidates = [
+        _portfolio_item("E0 robust all-season home value", "optimized_walk_forward", ["all"], seasons, e0_all),
+        _portfolio_item("I1 high-yield AH away value", "optimized_walk_forward", ["all"], seasons, i1_all),
+        _portfolio_item(
+            "I1 middle-season AH away overlay",
+            "phase_overlay_from_all",
+            ["middle"],
+            seasons,
+            i1_middle_overlay,
+        ),
+        _portfolio_item(
+            "I1 late-season AH away overlay",
+            "phase_overlay_from_all",
+            ["late"],
+            seasons,
+            i1_late_overlay,
+        ),
+    ]
+    candidates.sort(key=_portfolio_sort_key, reverse=True)
+    return StrategyPortfolioReport(
+        seasons=seasons,
+        leagues=["E0", "I1"],
+        season_phases=["all", "middle", "late"],
+        scan_phases=False,
+        candidates=candidates,
+    )
+
+
+def audit_strategy_profiles(
+    repository: StructuredRepository,
+    configured_profiles: list[StrategyProfileSettings],
+    seasons: list[str],
+    roi_tolerance: float = 0.002,
+    clv_tolerance: float = 0.002,
+) -> StrategyProfileAuditReport:
+    portfolio = build_strategy_portfolio(repository, seasons=seasons)
+    portfolio_by_id = {_profile_id_for_candidate(candidate): candidate for candidate in portfolio.candidates}
+    configured_by_id = {profile.id: profile for profile in configured_profiles if profile.active}
+    items: list[StrategyProfileAuditItem] = []
+
+    for profile_id, profile in configured_by_id.items():
+        candidate = portfolio_by_id.get(profile_id)
+        if candidate is None:
+            items.append(
+                StrategyProfileAuditItem(
+                    profile_id=profile_id,
+                    status="missing_from_portfolio",
+                    message="configured profile is active but not present in the current portfolio",
+                    configured=_profile_config_payload(profile),
+                )
+            )
+            continue
+        drift = _profile_drift(profile, candidate, roi_tolerance, clv_tolerance)
+        items.append(
+            StrategyProfileAuditItem(
+                profile_id=profile_id,
+                status="matched" if not drift else "stale",
+                message="profile matches current portfolio" if not drift else "; ".join(drift),
+                configured=_profile_config_payload(profile),
+                portfolio=_profile_candidate_payload(candidate),
+            )
+        )
+
+    for profile_id, candidate in portfolio_by_id.items():
+        if candidate.stability_label == "reject_unstable" or profile_id in configured_by_id:
+            continue
+        items.append(
+            StrategyProfileAuditItem(
+                profile_id=profile_id,
+                status="missing_from_config",
+                message="current portfolio candidate is not configured as an active strategy profile",
+                portfolio=_profile_candidate_payload(candidate),
+            )
+        )
+
+    status_order = {"stale": 0, "missing_from_portfolio": 1, "missing_from_config": 2, "matched": 3}
+    items.sort(key=lambda item: (status_order.get(item.status, 9), item.profile_id))
+    passed = all(item.status == "matched" for item in items)
+    return StrategyProfileAuditReport(seasons=seasons, passed=passed, items=items)
 
 
 def run_strategy(
@@ -245,13 +426,19 @@ def run_strategy_on_rows(
     )
     state: dict[str, TeamState] = {}
     decisions_by_season: dict[str, list[BetDecision]] = {season: [] for season in seasons}
+    season_totals: dict[str, int] = {}
+    season_seen: dict[str, int] = {}
+    for row in rows:
+        season_totals[row.season] = season_totals.get(row.season, 0) + 1
 
     for row in rows:
+        season_seen[row.season] = season_seen.get(row.season, 0) + 1
         home_state = state.get(row.home_team, TeamState())
         away_state = state.get(row.away_team, TeamState())
         if row.season not in decisions_by_season:
             decisions_by_season[row.season] = []
-        if _eligible_state(home_state, away_state, params):
+        phase = _season_phase(season_seen[row.season] - 1, season_totals[row.season])
+        if _phase_allowed(params.season_phase, phase) and _eligible_state(home_state, away_state, params):
             decision = _decision(row, home_state, away_state, params)
             if decision is not None:
                 decisions_by_season[row.season].append(decision)
@@ -304,12 +491,270 @@ def _eligible_state(home_state: TeamState, away_state: TeamState, params: Strate
     return home_state.matches >= params.min_matches and away_state.matches >= params.min_matches
 
 
+def _normalize_season_phases(season_phases: list[str] | None) -> list[str]:
+    if not season_phases:
+        return ["all"]
+    normalized = [phase.strip().lower() for phase in season_phases if phase.strip()]
+    if not normalized:
+        return ["all"]
+    invalid = sorted(set(normalized) - {"all", "early", "middle", "late"})
+    if invalid:
+        raise ValueError(f"unsupported_season_phase:{','.join(invalid)}")
+    return normalized
+
+
+def _normalize_leagues(leagues: list[str] | None) -> list[str]:
+    if not leagues:
+        return ["E0", "SP1", "D1", "I1", "F1"]
+    normalized = [league.strip().upper() for league in leagues if league.strip()]
+    return normalized or ["E0", "SP1", "D1", "I1", "F1"]
+
+
+def _phase_allowed(requested_phase: str, current_phase: str) -> bool:
+    normalized = requested_phase.strip().lower()
+    if normalized not in {"all", "early", "middle", "late"}:
+        raise ValueError(f"unsupported_season_phase:{requested_phase}")
+    return normalized == "all" or normalized == current_phase
+
+
+def _season_phase(index: int, total: int) -> str:
+    # Phase filters only control bet eligibility; team state still accrues full season history.
+    if total <= 0:
+        return "early"
+    ratio = index / total
+    if ratio < 1 / 3:
+        return "early"
+    if ratio < 2 / 3:
+        return "middle"
+    return "late"
+
+
 def _selection_score(result: StrategyResult) -> float:
     positive_seasons = sum(1 for item in result.season_breakdown if (item.get("roi") or 0) > 0)
     consistency = positive_seasons / len(result.season_breakdown) if result.season_breakdown else 0.0
     volume_penalty = 0.0 if result.bets >= 180 else (180 - result.bets) / 1000
     clv_bonus = min(result.average_clv or 0.0, 0.03)
     return (result.roi or -1.0) + consistency * 0.06 + clv_bonus - volume_penalty
+
+
+def _scan_phase_candidates(
+    repository: StructuredRepository,
+    seasons: list[str],
+    leagues: list[str],
+    season_phases: list[str],
+) -> list[StrategyPortfolioItem]:
+    candidates: list[StrategyPortfolioItem] = []
+    for league in leagues:
+        base_result = walk_forward_optimize(
+            repository,
+            league=league,
+            seasons=seasons,
+            min_train_seasons=2,
+            min_test_bets=30,
+            season_phases=["all"],
+        )
+        for phase in season_phases:
+            if phase == "all":
+                result = base_result
+                strategy_type = "phase_scan_base"
+            else:
+                result = _phase_overlay_walk_forward(repository, base_result, seasons, phase)
+                strategy_type = "phase_scan_overlay"
+            candidates.append(
+                _portfolio_item(
+                    f"{league} {phase}-season value scan",
+                    strategy_type,
+                    [phase],
+                    seasons,
+                    result,
+                )
+            )
+    return candidates
+
+
+def _phase_overlay_walk_forward(
+    repository: StructuredRepository,
+    source: WalkForwardResult,
+    seasons: list[str],
+    season_phase: str,
+) -> WalkForwardResult:
+    rows = _load_rows(repository, source.league, seasons)
+    folds: list[StrategyResult] = []
+    for source_fold in source.folds:
+        params = _params_from_result(source_fold, season_phase)
+        fold = run_strategy_on_rows(rows, source.league, source_fold.test_seasons, params)
+        folds.append(
+            fold.model_copy(
+                update={
+                    "train_seasons": source_fold.train_seasons,
+                    "test_seasons": source_fold.test_seasons,
+                    "params": {
+                        **params.__dict__,
+                        "source_strategy_phase": source_fold.params.get("season_phase", "all"),
+                        "source_train_roi": source_fold.params.get("train_roi"),
+                        "source_train_bets": source_fold.params.get("train_bets"),
+                    },
+                    "selected_by": "phase_overlay_from_all",
+                }
+            )
+        )
+    return _summarize_folds(source.league, folds)
+
+
+def _params_from_result(result: StrategyResult, season_phase: str) -> StrategyParams:
+    names = {field.name for field in fields(StrategyParams)}
+    values = {name: result.params[name] for name in names if name in result.params}
+    values["season_phase"] = season_phase
+    return StrategyParams(**values)
+
+
+def _summarize_folds(league: str, folds: list[StrategyResult]) -> WalkForwardResult:
+    settled = sum(fold.settled_bets for fold in folds)
+    profit = sum(fold.profit_units for fold in folds)
+    roi = profit / settled if settled else None
+    clv_values = [fold.average_clv for fold in folds if fold.average_clv is not None]
+    average_clv = mean(clv_values) if clv_values else None
+    return WalkForwardResult(
+        league=league,
+        folds=folds,
+        bets=sum(fold.bets for fold in folds),
+        settled_bets=settled,
+        profit_units=round(profit, 3),
+        roi=round(roi, 4) if roi is not None else None,
+        positive_folds=sum(1 for fold in folds if (fold.roi or 0) > 0),
+        fold_count=len(folds),
+        average_clv=round(average_clv, 4) if average_clv is not None else None,
+    )
+
+
+def _portfolio_item(
+    name: str,
+    strategy_type: str,
+    season_phases: list[str],
+    seasons: list[str],
+    result: WalkForwardResult,
+) -> StrategyPortfolioItem:
+    fold_rois = [fold.roi for fold in result.folds if fold.roi is not None]
+    worst_fold_roi = min(fold_rois) if fold_rois else None
+    selected_by = [fold.selected_by for fold in result.folds]
+    return StrategyPortfolioItem(
+        name=name,
+        league=result.league,
+        strategy_type=strategy_type,
+        season_phases=season_phases,
+        seasons=seasons,
+        settled_bets=result.settled_bets,
+        profit_units=result.profit_units,
+        roi=result.roi,
+        positive_folds=result.positive_folds,
+        fold_count=result.fold_count,
+        average_clv=result.average_clv,
+        worst_fold_roi=round(worst_fold_roi, 4) if worst_fold_roi is not None else None,
+        stability_label=_stability_label(result),
+        fallback_folds=sum(1 for value in selected_by if value == "fallback_no_training_candidate"),
+        selected_by=selected_by,
+        params=result.folds[-1].params if result.folds else {},
+        folds=result.folds,
+    )
+
+
+def _stability_label(result: WalkForwardResult) -> str:
+    if any(fold.selected_by == "fallback_no_training_candidate" for fold in result.folds):
+        return "reject_unstable"
+    has_positive_clv = (result.average_clv or 0.0) > 0.0
+    has_two_thirds_positive = result.positive_folds * 3 >= result.fold_count * 2 if result.fold_count else False
+    if result.settled_bets >= 100 and result.positive_folds == result.fold_count and has_positive_clv:
+        return "robust"
+    if result.settled_bets >= 150 and (result.roi or 0.0) >= 0.10 and has_two_thirds_positive and has_positive_clv:
+        return "high_yield"
+    if result.settled_bets >= 60 and (result.roi or 0.0) >= 0.08 and has_two_thirds_positive and has_positive_clv:
+        return "supplemental"
+    return "reject_unstable"
+
+
+def _portfolio_sort_key(item: StrategyPortfolioItem) -> tuple[int, float, float, int]:
+    rank = {"robust": 4, "high_yield": 3, "supplemental": 2, "reject_unstable": 1}.get(item.stability_label, 0)
+    return (rank, item.roi or -1.0, item.average_clv or -1.0, item.settled_bets)
+
+
+def _profile_id_for_candidate(candidate: StrategyPortfolioItem) -> str:
+    phase = candidate.season_phases[0] if candidate.season_phases else "all"
+    if candidate.params.get("mode") == "asian_value":
+        selection = _profile_selection_from_params(candidate.params)
+        return f"{candidate.league.lower()}_{phase}_ah_{selection}_{candidate.stability_label}"
+    selection = _profile_selection_from_params(candidate.params)
+    return f"{candidate.league.lower()}_{phase}_{selection}_{candidate.stability_label}"
+
+
+def _profile_selection_from_params(params: dict) -> str:
+    selection_bias = str(params.get("selection_bias", "")).lower()
+    if selection_bias == "ah_away":
+        return "away"
+    if selection_bias == "ah_home":
+        return "home"
+    return selection_bias or "all"
+
+
+def _profile_config_payload(profile: StrategyProfileSettings) -> dict:
+    return {
+        "id": profile.id,
+        "league_code": profile.league_code,
+        "market_type": profile.market_type,
+        "selections": profile.selections,
+        "season_phases": profile.season_phases,
+        "stability_label": profile.stability_label,
+        "roi": profile.roi,
+        "settled_bets": profile.settled_bets,
+        "positive_folds": profile.positive_folds,
+        "fold_count": profile.fold_count,
+        "average_clv": profile.average_clv,
+    }
+
+
+def _profile_candidate_payload(candidate: StrategyPortfolioItem) -> dict:
+    return {
+        "id": _profile_id_for_candidate(candidate),
+        "league_code": candidate.league,
+        "season_phases": candidate.season_phases,
+        "stability_label": candidate.stability_label,
+        "roi": candidate.roi,
+        "settled_bets": candidate.settled_bets,
+        "positive_folds": candidate.positive_folds,
+        "fold_count": candidate.fold_count,
+        "average_clv": candidate.average_clv,
+    }
+
+
+def _profile_drift(
+    profile: StrategyProfileSettings,
+    candidate: StrategyPortfolioItem,
+    roi_tolerance: float,
+    clv_tolerance: float,
+) -> list[str]:
+    drift: list[str] = []
+    if profile.league_code.upper() != candidate.league:
+        drift.append(f"league_code changed:{profile.league_code}->{candidate.league}")
+    if profile.season_phases != candidate.season_phases:
+        drift.append(f"season_phases changed:{profile.season_phases}->{candidate.season_phases}")
+    if profile.stability_label != candidate.stability_label:
+        drift.append(f"stability_label changed:{profile.stability_label}->{candidate.stability_label}")
+    if profile.settled_bets != candidate.settled_bets:
+        drift.append(f"settled_bets changed:{profile.settled_bets}->{candidate.settled_bets}")
+    if profile.positive_folds != candidate.positive_folds:
+        drift.append(f"positive_folds changed:{profile.positive_folds}->{candidate.positive_folds}")
+    if profile.fold_count != candidate.fold_count:
+        drift.append(f"fold_count changed:{profile.fold_count}->{candidate.fold_count}")
+    if _float_drifted(profile.roi, candidate.roi, roi_tolerance):
+        drift.append(f"roi changed:{profile.roi}->{candidate.roi}")
+    if _float_drifted(profile.average_clv, candidate.average_clv, clv_tolerance):
+        drift.append(f"average_clv changed:{profile.average_clv}->{candidate.average_clv}")
+    return drift
+
+
+def _float_drifted(left: float | None, right: float | None, tolerance: float) -> bool:
+    if left is None or right is None:
+        return left != right
+    return abs(left - right) > tolerance
 
 
 def _decision(row: HistoricalMatchRow, home_state: TeamState, away_state: TeamState, params: StrategyParams) -> BetDecision | None:

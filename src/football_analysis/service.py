@@ -9,6 +9,8 @@ from football_analysis.models import (
     Match,
     MatchAnalysis,
     OddsSnapshot,
+    PerformanceByLeagueReport,
+    PerformanceGroupSummary,
     PerformanceSummary,
     PickList,
     Recommendation,
@@ -97,29 +99,123 @@ class AnalysisService:
         self.repository.upsert_model("bets", bet.id, bet)
         return bet
 
+    def settle_bet(
+        self,
+        bet_id: str,
+        result: str | None = None,
+        closing_odds: float | None = None,
+    ) -> BetLog:
+        bet = self.repository.get_model("bets", bet_id, BetLog)
+        if bet is None:
+            raise KeyError(f"Bet not found: {bet_id}")
+
+        settled_result = _normalize_bet_result(result) if result else self._infer_bet_result(bet)
+        profit_units = _profit_for_result(settled_result, bet.odds, bet.stake_units)
+        updates = {
+            "result": settled_result,
+            "profit_units": round(profit_units, 4),
+        }
+        if closing_odds is not None:
+            updates["closing_odds"] = closing_odds
+        settled = bet.model_copy(update=updates)
+        self.repository.upsert_model("bets", settled.id, settled)
+        return settled
+
     def performance(self) -> PerformanceSummary:
         bets = self.repository.list_models("bets", BetLog)
-        settled = [bet for bet in bets if bet.profit_units is not None]
-        total_stake = sum(bet.stake_units for bet in settled)
-        profit = sum(bet.profit_units or 0.0 for bet in settled)
-        clv_values = [
-            (bet.closing_odds - bet.odds) / bet.odds
-            for bet in settled
-            if bet.closing_odds is not None and bet.odds > 0
-        ]
-        roi = profit / total_stake if total_stake else None
-        average_clv = sum(clv_values) / len(clv_values) if clv_values else None
-        return PerformanceSummary(
-            bets=len(bets),
-            settled_bets=len(settled),
-            total_stake_units=round(total_stake, 3),
-            profit_units=round(profit, 3),
-            roi=round(roi, 4) if roi is not None else None,
-            average_clv=round(average_clv, 4) if average_clv is not None else None,
-        )
+        return _performance_summary(bets)
+
+    def performance_by_league(self) -> PerformanceByLeagueReport:
+        matches = {match.id: match for match in self.repository.list_models("matches", Match)}
+        groups: dict[tuple[str, str, str], list[BetLog]] = {}
+        for bet in self.repository.list_models("bets", BetLog):
+            match = matches.get(bet.match_id)
+            league_code, league_name, tier = self._performance_league_key(match)
+            groups.setdefault((league_code, league_name, tier), []).append(bet)
+
+        summaries = []
+        for (league_code, league_name, tier), bets in sorted(groups.items()):
+            summary = _performance_summary(bets)
+            summaries.append(
+                PerformanceGroupSummary(
+                    league_code=league_code,
+                    league_name=league_name,
+                    tier=tier,
+                    **summary.model_dump(),
+                )
+            )
+        return PerformanceByLeagueReport(groups=summaries)
 
     async def sources_health(self) -> list[SourceHealth]:
         return await self.health_checker.check_all()
+
+    def _infer_bet_result(self, bet: BetLog) -> str:
+        match = self.repository.get_model("matches", bet.match_id, Match)
+        if match is None:
+            raise KeyError(f"Match not found: {bet.match_id}")
+        if bet.market_type.value != "1x2":
+            raise ValueError(f"explicit_result_required:{bet.market_type.value}")
+        winning_selection = _winning_1x2_selection(match)
+        return "win" if bet.selection.upper() == winning_selection else "loss"
+
+    def _performance_league_key(self, match: Match | None) -> tuple[str, str, str]:
+        if match is None:
+            return ("UNKNOWN", "Unknown", "unknown")
+        normalized_league = match.league.strip().lower()
+        for league in self.settings.leagues:
+            values = [league.code, league.name, league.football_data_uk_code, league.football_data_org_code]
+            if league.country and league.name:
+                values.append(f"{league.country} - {league.name}")
+            values.extend(league.aliases)
+            if normalized_league in {value.strip().lower() for value in values if value}:
+                return (league.code, league.name, league.tier)
+        return (match.league.upper().replace(" ", "_"), match.league, "unknown")
+
+
+def _winning_1x2_selection(match: Match) -> str:
+    if match.home_score is None or match.away_score is None:
+        raise ValueError(f"missing_final_score:{match.id}")
+    if match.home_score > match.away_score:
+        return "HOME"
+    if match.home_score < match.away_score:
+        return "AWAY"
+    return "DRAW"
+
+
+def _normalize_bet_result(result: str) -> str:
+    normalized = result.strip().lower()
+    if normalized not in {"win", "loss", "void"}:
+        raise ValueError(f"unsupported_bet_result:{result}")
+    return normalized
+
+
+def _profit_for_result(result: str, odds: float, stake_units: float) -> float:
+    if result == "win":
+        return (odds - 1.0) * stake_units
+    if result == "loss":
+        return -stake_units
+    return 0.0
+
+
+def _performance_summary(bets: list[BetLog]) -> PerformanceSummary:
+    settled = [bet for bet in bets if bet.profit_units is not None]
+    total_stake = sum(bet.stake_units for bet in settled)
+    profit = sum(bet.profit_units or 0.0 for bet in settled)
+    clv_values = [
+        (bet.closing_odds - bet.odds) / bet.odds
+        for bet in settled
+        if bet.closing_odds is not None and bet.odds > 0
+    ]
+    roi = profit / total_stake if total_stake else None
+    average_clv = sum(clv_values) / len(clv_values) if clv_values else None
+    return PerformanceSummary(
+        bets=len(bets),
+        settled_bets=len(settled),
+        total_stake_units=round(total_stake, 3),
+        profit_units=round(profit, 3),
+        roi=round(roi, 4) if roi is not None else None,
+        average_clv=round(average_clv, 4) if average_clv is not None else None,
+    )
 
 
 def get_service() -> AnalysisService:

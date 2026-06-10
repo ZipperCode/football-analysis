@@ -3,7 +3,16 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, HTTPException
 
 from football_analysis.backtest import run_historical_backtest
-from football_analysis.models import BacktestSummary, BetLog, IngestionResult, MatchAnalysis, PerformanceSummary, PickList, SourceHealth
+from football_analysis.models import (
+    BacktestSummary,
+    BetLog,
+    IngestionResult,
+    MatchAnalysis,
+    PerformanceByLeagueReport,
+    PerformanceSummary,
+    PickList,
+    SourceHealth,
+)
 from football_analysis.service import AnalysisService, get_api_service
 
 app = FastAPI(
@@ -36,9 +45,29 @@ def create_bet(bet: BetLog, service: AnalysisService = Depends(get_api_service))
     return service.record_bet(bet)
 
 
+@app.post("/bets/{bet_id}/settle", response_model=BetLog)
+def settle_bet(
+    bet_id: str,
+    result: str | None = None,
+    closing_odds: float | None = None,
+    service: AnalysisService = Depends(get_api_service),
+) -> BetLog:
+    try:
+        return service.settle_bet(bet_id, result=result, closing_odds=closing_odds)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/performance", response_model=PerformanceSummary)
 def performance(service: AnalysisService = Depends(get_api_service)) -> PerformanceSummary:
     return service.performance()
+
+
+@app.get("/performance/by-league", response_model=PerformanceByLeagueReport)
+def performance_by_league(service: AnalysisService = Depends(get_api_service)) -> PerformanceByLeagueReport:
+    return service.performance_by_league()
 
 
 @app.get("/sources/health", response_model=list[SourceHealth])
@@ -56,14 +85,25 @@ def ingest_fixtures(
     return service.ingestion.ingest_fixtures(date=date, source=source, league_code=league)
 
 
+@app.post("/jobs/ingest/results", response_model=IngestionResult)
+def ingest_results(
+    date: str,
+    source: str = "api_football",
+    league: str | None = None,
+    service: AnalysisService = Depends(get_api_service),
+) -> IngestionResult:
+    return service.ingestion.ingest_results(date=date, source=source, league_code=league)
+
+
 @app.post("/jobs/ingest/odds", response_model=IngestionResult)
 def ingest_odds(
     date: str | None = None,
     source: str = "api_football",
     league: str | None = None,
+    max_events: int | None = None,
     service: AnalysisService = Depends(get_api_service),
 ) -> IngestionResult:
-    return service.ingestion.ingest_odds(date=date, source=source, league_code=league)
+    return service.ingestion.ingest_odds(date=date, source=source, league_code=league, max_events=max_events)
 
 
 @app.post("/jobs/ingest/standings", response_model=IngestionResult)

@@ -12,7 +12,7 @@ from football_analysis.datasources.football_data_uk import FootballDataUkClient
 from football_analysis.datasources.odds_api_io import OddsApiIoClient
 from football_analysis.db import StructuredRepository
 from football_analysis.http_client import ProviderHttpClient
-from football_analysis.models import IngestionResult, JobRun, JobStatus, Match, OddsSnapshot
+from football_analysis.models import IngestionResult, JobRun, JobStatus, Match, MatchStatus, OddsSnapshot
 from football_analysis.settings import LeagueSettings, Settings
 
 
@@ -27,21 +27,7 @@ class IngestionService:
         errors: list[str] = []
         matches: list[Match] = []
         try:
-            if source == "api_football":
-                client = APIFootballClient(self._context(source))
-                for league in self._leagues(league_code):
-                    if league.api_football_league_id and league.season:
-                        matches.extend(client.fixtures(date, league.api_football_league_id, league.season))
-            elif source == "football_data_org":
-                client = FootballDataOrgClient(self._context(source))
-                for league in self._leagues(league_code):
-                    if league.football_data_org_code:
-                        matches.extend(client.matches(date, date, league.football_data_org_code))
-            elif source == "odds_api_io":
-                client = OddsApiIoClient(self._context(source))
-                matches.extend(client.events())
-            else:
-                raise DataSourceError(f"unsupported_fixture_source:{source}")
+            matches = self._collect_fixtures(date=date, source=source, league_code=league_code)
 
             for match in matches:
                 self.repository.upsert_model("matches", match.id, match)
@@ -52,7 +38,33 @@ class IngestionService:
             job = self._finish_job(job, JobStatus.failed, {"matches": len(matches)}, error=errors[-1])
             return IngestionResult(job=job, inserted=len(matches), errors=errors)
 
-    def ingest_odds(self, date: str | None = None, source: str = "api_football", league_code: str | None = None) -> IngestionResult:
+    def ingest_results(self, date: str, source: str = "api_football", league_code: str | None = None) -> IngestionResult:
+        job = self._start_job("ingest_results", source)
+        errors: list[str] = []
+        matches: list[Match] = []
+        try:
+            matches = self._collect_fixtures(date=date, source=source, league_code=league_code)
+            for match in matches:
+                self.repository.upsert_model("matches", match.id, match)
+            finished_matches = sum(1 for match in matches if match.status is MatchStatus.finished)
+            job = self._finish_job(
+                job,
+                JobStatus.succeeded,
+                {"matches": len(matches), "finished_matches": finished_matches},
+            )
+            return IngestionResult(job=job, inserted=len(matches), updated=finished_matches, errors=errors)
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+            job = self._finish_job(job, JobStatus.failed, {"matches": len(matches)}, error=errors[-1])
+            return IngestionResult(job=job, inserted=len(matches), errors=errors)
+
+    def ingest_odds(
+        self,
+        date: str | None = None,
+        source: str = "api_football",
+        league_code: str | None = None,
+        max_events: int | None = None,
+    ) -> IngestionResult:
         job = self._start_job("ingest_odds", source)
         errors: list[str] = []
         snapshots: list[OddsSnapshot] = []
@@ -64,7 +76,17 @@ class IngestionService:
                         snapshots.extend(client.odds(date=date, league=league.api_football_league_id, season=league.season))
             elif source == "odds_api_io":
                 client = OddsApiIoClient(self._context(source))
-                snapshots.extend(client.odds())
+                for league in self._leagues(league_code):
+                    if not league.odds_api_slug:
+                        continue
+                    # A CLI/API override wins; otherwise each league controls its own quota footprint.
+                    event_limit = max_events if max_events is not None else league.max_events
+                    events = _limit_events(client.events(league=league.odds_api_slug), max_events=event_limit)
+                    for event in events:
+                        self.repository.upsert_model("matches", event.id, event)
+                        event_id = event.external_ids.get("odds_api_io_event")
+                        if event_id:
+                            snapshots.extend(client.odds(event_id=event_id))
             else:
                 raise DataSourceError(f"unsupported_odds_source:{source}")
 
@@ -143,6 +165,27 @@ class IngestionService:
                 return league
         raise DataSourceError(f"unknown_league:{league_code}")
 
+    def _collect_fixtures(self, date: str, source: str, league_code: str | None) -> list[Match]:
+        matches: list[Match] = []
+        if source == "api_football":
+            client = APIFootballClient(self._context(source))
+            for league in self._leagues(league_code):
+                if league.api_football_league_id and league.season:
+                    matches.extend(client.fixtures(date, league.api_football_league_id, league.season))
+        elif source == "football_data_org":
+            client = FootballDataOrgClient(self._context(source))
+            for league in self._leagues(league_code):
+                if league.football_data_org_code:
+                    matches.extend(client.matches(date, date, league.football_data_org_code))
+        elif source == "odds_api_io":
+            client = OddsApiIoClient(self._context(source))
+            for league in self._leagues(league_code):
+                if league.odds_api_slug:
+                    matches.extend(client.events(league=league.odds_api_slug))
+        else:
+            raise DataSourceError(f"unsupported_fixture_source:{source}")
+        return matches
+
     def _start_job(self, job_type: str, source: str | None) -> JobRun:
         job = JobRun(id=str(uuid4()), job_type=job_type, status=JobStatus.started, source=source)
         self.repository.upsert_model("jobs", job.id, job)
@@ -181,3 +224,10 @@ def aggregate_market_prices(snapshots: list[OddsSnapshot]) -> list[OddsSnapshot]
         for snapshot in group:
             aggregated.append(snapshot.model_copy(update={"market_average": averages, "best_price": best}))
     return aggregated
+
+
+def _limit_events(events: list[Match], max_events: int | None) -> list[Match]:
+    ordered = sorted(events, key=lambda item: item.kickoff_at)
+    if max_events is None or max_events <= 0:
+        return ordered
+    return ordered[:max_events]

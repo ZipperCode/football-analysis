@@ -54,6 +54,7 @@ def map_fixtures(payload: dict[str, Any]) -> list[Match]:
         teams = item.get("teams") or {}
         home = teams.get("home") or {}
         away = teams.get("away") or {}
+        goals = item.get("goals") or {}
         fixture_id = str(fixture.get("id"))
         if not fixture_id or fixture_id == "None":
             continue
@@ -68,6 +69,8 @@ def map_fixtures(payload: dict[str, Any]) -> list[Match]:
                 data_completeness=0.72,
                 season=_safe_int(league.get("season")),
                 country=league.get("country"),
+                home_score=_safe_int(goals.get("home")),
+                away_score=_safe_int(goals.get("away")),
                 external_ids={
                     "api_football_fixture": fixture_id,
                     "api_football_league": str(league.get("id") or ""),

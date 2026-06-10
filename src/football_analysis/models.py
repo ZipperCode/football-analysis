@@ -21,6 +21,7 @@ class MatchStatus(str, Enum):
 
 class RecommendationStatus(str, Enum):
     recommended = "recommended"
+    paper_candidate = "paper_candidate"
     analysis_only = "analysis_only"
     rejected = "rejected"
 
@@ -54,6 +55,8 @@ class Match(AppModel):
     data_completeness: float = Field(default=0.0, ge=0.0, le=1.0)
     season: int | None = None
     country: str | None = None
+    home_score: int | None = None
+    away_score: int | None = None
     external_ids: dict[str, str] = Field(default_factory=dict)
 
 
@@ -138,6 +141,16 @@ class PerformanceSummary(AppModel):
     profit_units: float
     roi: float | None
     average_clv: float | None
+
+
+class PerformanceGroupSummary(PerformanceSummary):
+    league_code: str
+    league_name: str
+    tier: str
+
+
+class PerformanceByLeagueReport(AppModel):
+    groups: list[PerformanceGroupSummary] = Field(default_factory=list)
 
 
 class JobStatus(str, Enum):
