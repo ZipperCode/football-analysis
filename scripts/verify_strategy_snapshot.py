@@ -85,12 +85,15 @@ def main() -> None:
 
 def _match(settings) -> Match:
     now = datetime.now(settings.app.tzinfo)
+    kickoff_at = now + timedelta(hours=1)
+    if kickoff_at.date() != now.date():
+        kickoff_at = now.replace(hour=23, minute=59, second=0, microsecond=0)
     return Match(
         id="snapshot-match",
         league="England - Premier League",
         home_team="Snapshot Home",
         away_team="Snapshot Away",
-        kickoff_at=now + timedelta(hours=4),
+        kickoff_at=kickoff_at,
         data_completeness=0.92,
     )
 
