@@ -21,6 +21,7 @@ class MatchStatus(str, Enum):
 
 class RecommendationStatus(str, Enum):
     recommended = "recommended"
+    advisory_recommended = "advisory_recommended"
     paper_candidate = "paper_candidate"
     analysis_only = "analysis_only"
     rejected = "rejected"
@@ -105,6 +106,32 @@ class Recommendation(AppModel):
     version: str = "v1"
 
 
+
+class StrategySnapshot(AppModel):
+    id: str
+    recommendation_id: str
+    match_id: str
+    strategy_name: str
+    strategy_version: str = "v1"
+    strategy_profile: dict[str, Any] = Field(default_factory=dict)
+    decision_stage: str = "recommendation"
+    decision_time: datetime = Field(default_factory=datetime.utcnow)
+    market_type: MarketType | None = None
+    selection: str | None = None
+    recommendation_status: RecommendationStatus
+    model_prediction: dict[str, Any] = Field(default_factory=dict)
+    market_odds: dict[str, Any] = Field(default_factory=dict)
+    closing_odds: dict[str, Any] = Field(default_factory=dict)
+    expected_value: float | None = None
+    clv: float | None = None
+    settlement_result: str | None = None
+    profit_units: float | None = None
+    time_to_kickoff_hours: float | None = None
+    stake_units: float = Field(default=0.0, ge=0.0)
+    gates_failed: list[str] = Field(default_factory=list)
+    reasoning: str
+    source_recommendation: dict[str, Any] = Field(default_factory=dict)
+    audit_payload: dict[str, Any] = Field(default_factory=dict)
 class BetLog(AppModel):
     id: str
     match_id: str
@@ -163,6 +190,24 @@ class PerformanceByLeagueReport(AppModel):
     groups: list[PerformanceGroupSummary] = Field(default_factory=list)
 
 
+class PaperBankrollReport(AppModel):
+    profile_id: str
+    initial_units: float
+    current_units: float
+    bets: int
+    settled_bets: int
+    total_stake_units: float
+    profit_units: float
+    roi: float | None
+    average_clv: float | None
+    positive_clv_rate: float | None
+    max_drawdown_units: float | None
+    consecutive_losses: int
+    status: str
+    action: str
+    issues: list[str] = Field(default_factory=list)
+
+
 class JobStatus(str, Enum):
     started = "started"
     succeeded = "succeeded"
@@ -199,6 +244,12 @@ class BacktestSummary(AppModel):
     profit_units: float
     roi: float | None
     average_clv: float | None
+    hit_rate: float | None = None
+    positive_clv_rate: float | None = None
+    max_drawdown_units: float | None = None
+    brier_score: float | None = None
+    calibration_buckets: list[dict[str, Any]] = Field(default_factory=list)
+    segment_breakdown: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SourceHealth(AppModel):

@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from football_analysis.contracts import HistoricalMatchRow
-from football_analysis.models import AgentFinding, BetLog, JobRun, Match, OddsSnapshot, Recommendation
+from football_analysis.models import AgentFinding, BetLog, JobRun, Match, OddsSnapshot, Recommendation, StrategySnapshot
 
 
 class StructuredBase(DeclarativeBase):
@@ -83,6 +83,27 @@ class RecommendationRow(StructuredBase, PayloadMixin):
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+
+class StrategySnapshotRow(StructuredBase, PayloadMixin):
+    __tablename__ = "strategy_snapshots"
+
+    id: Mapped[str] = mapped_column(String(260), primary_key=True)
+    recommendation_id: Mapped[str] = mapped_column(String(240), nullable=False, index=True)
+    match_id: Mapped[str] = mapped_column(String(180), nullable=False, index=True)
+    strategy_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    decision_stage: Mapped[str] = mapped_column(String(80), nullable=False)
+    decision_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    market_type: Mapped[str | None] = mapped_column(String(80))
+    selection: Mapped[str | None] = mapped_column(String(120))
+    recommendation_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    expected_value: Mapped[float | None] = mapped_column(Float)
+    clv: Mapped[float | None] = mapped_column(Float)
+    settlement_result: Mapped[str | None] = mapped_column(String(40))
+    profit_units: Mapped[float | None] = mapped_column(Float)
+    stake_units: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class BetRow(StructuredBase, PayloadMixin):
@@ -165,6 +186,7 @@ class StructuredRepository:
         "odds": OddsSnapshotRow,
         "findings": AgentFindingRow,
         "recommendations": RecommendationRow,
+        "strategy_snapshots": StrategySnapshotRow,
         "bets": BetRow,
         "jobs": JobRunRow,
         "historical_matches": HistoricalMatchRowModel,
@@ -383,6 +405,25 @@ class StructuredRepository:
                 "risk_score": model.risk_score,
                 "confidence": model.confidence,
                 "created_at": model.created_at,
+                "payload": payload,
+            }
+        if isinstance(model, StrategySnapshot):
+            return {
+                "id": record_id,
+                "recommendation_id": model.recommendation_id,
+                "match_id": model.match_id,
+                "strategy_name": model.strategy_name,
+                "strategy_version": model.strategy_version,
+                "decision_stage": model.decision_stage,
+                "decision_time": model.decision_time,
+                "market_type": model.market_type.value if model.market_type else None,
+                "selection": model.selection,
+                "recommendation_status": model.recommendation_status.value,
+                "expected_value": model.expected_value,
+                "clv": model.clv,
+                "settlement_result": model.settlement_result,
+                "profit_units": model.profit_units,
+                "stake_units": model.stake_units,
                 "payload": payload,
             }
         if isinstance(model, BetLog):

@@ -31,6 +31,12 @@ def main() -> None:
             assert summary.matches == 2
             assert summary.bets >= 1
             assert summary.settled_bets >= 1
+            assert summary.hit_rate is not None
+            assert summary.positive_clv_rate is not None
+            assert summary.max_drawdown_units is not None
+            assert summary.brier_score is not None
+            assert summary.calibration_buckets, "expected calibration buckets for settled backtest bets"
+            assert summary.segment_breakdown, "expected odds segment breakdown"
         finally:
             repository.close()
 
