@@ -137,6 +137,7 @@ def main() -> None:
         assert cli_payload["settled_bets"][0]["id"] == "cli-batch-bet"
 
     with TemporaryDirectory() as tmp:
+        os.environ["FOOTBALL_ADMIN_TOKEN"] = "verify-settlement-token"
         os.environ["DATABASE_URL"] = f"sqlite:///{Path(tmp) / 'api-settlement.db'}"
         api_repository = StructuredRepository(os.environ["DATABASE_URL"])
         api_repository.initialize()
@@ -152,8 +153,11 @@ def main() -> None:
         from fastapi.testclient import TestClient
         from football_analysis.api import app
 
-        response = TestClient(app).post("/bets/settle-open")
-        assert response.status_code == 200
+        response = TestClient(app).post(
+            "/bets/settle-open",
+            headers={"x-football-admin-token": "verify-settlement-token"},
+        )
+        assert response.status_code == 200, response.text
         api_payload = response.json()
         assert api_payload["settled_count"] == 1, "API batch settlement should settle open finished bets"
         assert api_payload["settled_bets"][0]["id"] == "api-batch-bet"

@@ -107,16 +107,25 @@ def audit_odds_readiness(
     min_profile_matches: int = 1,
     include_past: bool = False,
     checked_at: datetime | None = None,
+    league_codes: set[str] | None = None,
+    require_strategy_profiles: bool = True,
 ) -> OddsReadinessReport:
     """Audit whether stored live odds can support the configured strategy profiles."""
-    now = checked_at or datetime.now(settings.app.tzinfo)
+    now = _sortable_kickoff_at(checked_at or datetime.now(settings.app.tzinfo), settings)
+    scoped_league_codes = {code.upper() for code in league_codes or set()}
     matches = repository.list_models("matches", Match)
     odds = repository.list_models("odds", OddsSnapshot)
     scoped_matches = [
         match
         for match in matches
-        if include_past or _match_local_date(match, settings) >= now.date()
+        if include_past or _sortable_kickoff_at(match.kickoff_at, settings) > now
     ]
+    if scoped_league_codes:
+        scoped_matches = [
+            match
+            for match in scoped_matches
+            if _match_in_league_codes(match, settings, scoped_league_codes)
+        ]
     scoped_match_ids = {match.id for match in scoped_matches}
     scoped_odds = [snapshot for snapshot in odds if snapshot.match_id in scoped_match_ids]
 
@@ -152,7 +161,7 @@ def audit_odds_readiness(
             min_profile_matches=min_profile_matches,
         )
         for profile in settings.strategy_profiles
-        if profile.active
+        if profile.active and (not scoped_league_codes or _profile_in_league_codes(profile, settings, scoped_league_codes))
     ]
     profile_ids_by_group = _profile_ids_by_market_group(profiles, market_coverages)
     market_coverages = [
@@ -163,14 +172,21 @@ def audit_odds_readiness(
     ready_profiles = sum(1 for profile in profiles if profile.status == "ready")
     partial_profiles = sum(1 for profile in profiles if profile.status == "partial")
     insufficient_profiles = sum(1 for profile in profiles if profile.status == "insufficient")
-    issues = _report_issues(profiles, scoped_matches, scoped_odds)
+    issues = _report_issues(
+        profiles,
+        scoped_matches,
+        scoped_odds,
+        require_strategy_profiles=require_strategy_profiles,
+    )
     refresh_requirements = _build_refresh_requirements(
         profiles,
         settings=settings,
         min_profile_matches=min_profile_matches,
         default_min_bookmakers=min_bookmakers,
     )
-    if profiles and ready_profiles == len(profiles):
+    if not profiles and not require_strategy_profiles and scoped_matches and scoped_odds:
+        status = "ready"
+    elif profiles and ready_profiles == len(profiles):
         status = "ready"
     elif ready_profiles > 0 or partial_profiles > 0:
         status = "partial"
@@ -521,6 +537,32 @@ def _strategy_league_code(league: LeagueSettings | None) -> str | None:
     return (league.football_data_uk_code or league.code).upper()
 
 
+def _match_in_league_codes(match: Match, settings: Settings, league_codes: set[str]) -> bool:
+    league = _league_settings_for_match(match, settings)
+    if league is None:
+        return False
+    candidates = {league.code.upper()}
+    strategy_code = _strategy_league_code(league)
+    if strategy_code:
+        candidates.add(strategy_code)
+    return bool(candidates & league_codes)
+
+
+def _profile_in_league_codes(
+    profile: StrategyProfileSettings,
+    settings: Settings,
+    league_codes: set[str],
+) -> bool:
+    candidates = {profile.league_code.upper()}
+    league = _league_for_strategy_code(settings, profile.league_code)
+    if league is not None:
+        candidates.add(league.code.upper())
+        strategy_code = _strategy_league_code(league)
+        if strategy_code:
+            candidates.add(strategy_code)
+    return bool(candidates & league_codes)
+
+
 def _league_for_strategy_code(settings: Settings, strategy_code: str) -> LeagueSettings | None:
     normalized = strategy_code.upper()
     for league in settings.leagues:
@@ -529,11 +571,14 @@ def _league_for_strategy_code(settings: Settings, strategy_code: str) -> LeagueS
     return None
 
 
+def _sortable_kickoff_at(value: datetime, settings: Settings) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=settings.app.tzinfo)
+    return value.astimezone(settings.app.tzinfo)
+
+
 def _match_local_date(match: Match, settings: Settings):
-    kickoff = match.kickoff_at
-    if kickoff.tzinfo is None:
-        kickoff = kickoff.replace(tzinfo=settings.app.tzinfo)
-    return kickoff.astimezone(settings.app.tzinfo).date()
+    return _sortable_kickoff_at(match.kickoff_at, settings).date()
 
 
 def _market_key(coverage: OddsMarketCoverage) -> tuple[str, str, str | None]:
@@ -544,9 +589,11 @@ def _report_issues(
     profiles: list[StrategyProfileReadiness],
     scoped_matches: list[Match],
     scoped_odds: list[OddsSnapshot],
+    *,
+    require_strategy_profiles: bool = True,
 ) -> list[str]:
     issues: list[str] = []
-    if not profiles:
+    if require_strategy_profiles and not profiles:
         issues.append("no_active_strategy_profiles")
     if not scoped_matches:
         issues.append("no_today_or_future_matches")

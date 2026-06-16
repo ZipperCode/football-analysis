@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.116.0",
   "httpx>=0.28.0",
+  "mcp>=1.0.0",
   "pydantic>=2.11.0",
   "psycopg[binary]>=3.2.0",
   "python-dotenv>=1.0.0",
@@ -18,11 +19,12 @@ dependencies = [
   "rich>=14.0.0",
   "SQLAlchemy>=2.0.40",
   "typer>=0.16.0",
-  "uvicorn[standard]>=0.35.0"
+  "uvicorn>=0.35.0"
 ]
 
 [project.scripts]
 footballctl = "football_analysis.cli:app"
+football-analysis-mcp = "football_analysis.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

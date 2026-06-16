@@ -16,6 +16,8 @@ class LivePreflightReport(AppModel):
     status: str
     ready_to_bet: bool
     action: str
+    league_codes: list[str] = Field(default_factory=list)
+    require_strategy_profiles: bool = True
     issues: list[str] = Field(default_factory=list)
     odds_readiness: OddsReadinessReport
     live_audit: LiveAuditReport
@@ -28,6 +30,8 @@ def run_live_preflight(
     min_bookmakers: int | None = None,
     min_profile_matches: int = 1,
     checked_at: datetime | None = None,
+    league_codes: set[str] | None = None,
+    require_strategy_profiles: bool = True,
 ) -> LivePreflightReport:
     now = checked_at or datetime.now(settings.app.tzinfo)
     odds_readiness = audit_odds_readiness(
@@ -37,12 +41,15 @@ def run_live_preflight(
         min_profile_matches=min_profile_matches,
         include_past=include_past,
         checked_at=now,
+        league_codes=league_codes,
+        require_strategy_profiles=require_strategy_profiles,
     )
     live_audit = audit_live_trading(
         repository,
         settings,
         include_past=include_past,
         checked_at=now,
+        league_codes=league_codes,
     )
     status, action, issues = _preflight_decision(odds_readiness, live_audit)
     return LivePreflightReport(
@@ -50,6 +57,8 @@ def run_live_preflight(
         status=status,
         ready_to_bet=status == "ready",
         action=action,
+        league_codes=sorted(league_codes or []),
+        require_strategy_profiles=require_strategy_profiles,
         issues=issues,
         odds_readiness=odds_readiness,
         live_audit=live_audit,

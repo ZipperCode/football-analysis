@@ -62,19 +62,70 @@ def main() -> None:
                 include_past=True,
             )
             assert report.dry_run is False
-            assert report.leagues == ["EPL", "SERIE_A"], "live refresh should target active profile leagues only"
+            expected_leagues = ["BRA_SERIE_A", "EPL", "SERIE_A"]
+            assert report.leagues == expected_leagues, "live refresh should target active profile leagues only"
+            league_by_code = {league.code: league for league in settings.leagues}
+            expected_fixture_calls = [
+                ("fixtures", "api_football", league_code, "2026-01-18")
+                for league_code in expected_leagues
+                if league_by_code[league_code].api_football_league_id and league_by_code[league_code].season
+            ]
+            expected_odds_calls = [
+                ("odds", "odds_api_io", league_code, None, 3)
+                for league_code in expected_leagues
+                if league_by_code[league_code].odds_api_slug
+            ]
             assert fake_ingestion.calls == [
-                ("fixtures", "api_football", "EPL", "2026-01-18"),
-                ("fixtures", "api_football", "SERIE_A", "2026-01-18"),
-                ("odds", "odds_api_io", "EPL", None, 3),
-                ("odds", "odds_api_io", "SERIE_A", None, 3),
+                *expected_fixture_calls,
+                *expected_odds_calls,
             ], "live refresh must run fixtures before odds for active profile leagues"
-            assert len(report.operations) == 4
-            assert all(operation.executed for operation in report.operations)
-            assert len(report.fixture_results) == 2
-            assert len(report.odds_results) == 2
+            assert len(report.operations) == len(expected_leagues) * 2
+            executed_operations = [
+                (operation.kind, operation.source, operation.league_code, operation.date, operation.max_events)
+                for operation in report.operations
+                if operation.executed
+            ]
+            assert executed_operations == [
+                *[
+                    ("fixtures", source, league_code, date, None)
+                    for _, source, league_code, date in expected_fixture_calls
+                ],
+                *[
+                    ("odds", source, league_code, date, max_events)
+                    for _, source, league_code, date, max_events in expected_odds_calls
+                ],
+            ]
+            assert any(
+                operation.kind == "fixtures"
+                and operation.league_code == "BRA_SERIE_A"
+                and operation.source == "api_football"
+                and operation.executed is True
+                for operation in report.operations
+            )
+            assert len(report.fixture_results) == len(expected_fixture_calls)
+            assert len(report.odds_results) == len(expected_odds_calls)
             assert report.preflight.ready_to_bet is False
             assert any(issue.startswith("preflight:") for issue in report.issues)
+
+            auto_source_ingestion = FakeIngestion()
+            service.ingestion = auto_source_ingestion  # type: ignore[assignment]
+            auto_report = run_live_refresh(
+                service,
+                date="2026-01-18",
+                max_events=3,
+                include_past=True,
+            )
+            assert auto_report.leagues == expected_leagues
+            assert auto_source_ingestion.calls == [
+                *[
+                    ("fixtures", "qqsd", league_code, "2026-01-18")
+                    for league_code in expected_leagues
+                ],
+                *[
+                    ("odds", "qqsd", league_code, "2026-01-18", 3)
+                    for league_code in expected_leagues
+                ],
+            ], "auto live refresh should prefer QQSD for fixtures and odds before free API fallbacks"
         finally:
             repository.close()
 
@@ -94,7 +145,8 @@ def main() -> None:
             assert "odds_refresh_empty:SERIE_A" in empty.issues, "empty odds refresh should be explicit"
 
             active_empty = run_live_refresh(service, date="2026-01-18", include_past=True)
-            assert "active_profile_refresh_empty:EPL,SERIE_A" in active_empty.issues, (
+            expected_empty_issue = f"active_profile_refresh_empty:{','.join(active_empty.leagues)}"
+            assert expected_empty_issue in active_empty.issues, (
                 "empty active-profile refresh should be reported as a profile calendar/data gap"
             )
             assert "consider_scope_live_leagues" in active_empty.issues, (
@@ -112,16 +164,16 @@ def main() -> None:
             service = AnalysisService(settings, repository)
             fake_ingestion = FakeIngestion(
                 fixture_inserted=1,
-                odds_inserted_by_source={"odds_api_io": 0, "api_football": 1},
+                odds_inserted_by_source={"qqsd": 0, "odds_api_io": 1, "api_football": 1},
             )
             service.ingestion = fake_ingestion  # type: ignore[assignment]
 
             from football_analysis.live_refresh import run_live_refresh
 
             fallback = run_live_refresh(service, date="2026-01-18", league="LALIGA", include_past=True)
-            assert ("odds", "odds_api_io", "LALIGA", None, None) in fake_ingestion.calls
-            assert ("odds", "api_football", "LALIGA", "2026-01-18", None) in fake_ingestion.calls
-            assert "odds_source_fallback:LALIGA:odds_api_io->api_football" in fallback.issues
+            assert ("fixtures", "qqsd", "LALIGA", "2026-01-18") in fake_ingestion.calls
+            assert ("odds", "qqsd", "LALIGA", "2026-01-18", None) in fake_ingestion.calls
+            assert "odds_source_fallback:LALIGA:qqsd->odds_api_io" in fallback.issues
             assert len([operation for operation in fallback.operations if operation.kind == "odds"]) == 2
 
             fixed_source = FakeIngestion(
@@ -137,7 +189,7 @@ def main() -> None:
                 include_past=True,
             )
             assert ("odds", "api_football", "LALIGA", "2026-01-18", None) not in fixed_source.calls
-            assert "odds_source_fallback:LALIGA:odds_api_io->api_football" not in strict.issues
+            assert "odds_source_fallback:LALIGA:odds_api_io->sportmonks" not in strict.issues
         finally:
             repository.close()
 
@@ -156,13 +208,16 @@ def main() -> None:
             dry = run_live_refresh(service, date="2026-01-18", dry_run=True, include_past=True)
             assert dry.dry_run is True
             assert fake_ingestion.calls == [], "dry-run must not spend remote quota"
-            assert dry.leagues == ["EPL", "SERIE_A"]
+            assert dry.leagues == ["BRA_SERIE_A", "EPL", "SERIE_A"]
             assert dry.scope == "active-profiles"
             assert dry.refresh_requirements, "dry-run must expose active-profile odds refresh requirements"
             target_keys = {
                 (item.refresh_league_code, item.market_type, tuple(item.selections))
                 for item in dry.refresh_requirements
             }
+            assert ("BRA_SERIE_A", "1x2", ("HOME",)) in target_keys, (
+                "dry-run must identify the BRA home-value odds gap"
+            )
             assert ("EPL", "1x2", ("HOME",)) in target_keys, (
                 "dry-run must identify the E0 home-value odds gap"
             )
@@ -186,9 +241,16 @@ def main() -> None:
             assert fixed_live_leagues.scope == "live-leagues"
             assert fixed_live_leagues.leagues == [
                 "ARG_PRIMERA",
+                "AUS_ACT_NPL",
+                "AUS_NPL_QLD",
+                "AUS_NPL_SA",
+                "AUS_NPL_TAS",
+                "AUS_NPL_VIC",
+                "AUS_NPL_WA",
                 "A_LEAGUE",
                 "BRA_SERIE_A",
                 "EPL",
+                "FIN_VEIKKAUSLIIGA",
                 "J1",
                 "K_LEAGUE_1",
                 "LALIGA",
@@ -197,6 +259,7 @@ def main() -> None:
                 "SERIE_A",
             ], "live-leagues scope should cover every non-paper live league"
             assert "odds_source_unmapped:ARG_PRIMERA:odds_api_io" in fixed_live_leagues.issues
+            assert "odds_source_unmapped:FIN_VEIKKAUSLIIGA:odds_api_io" in fixed_live_leagues.issues
             assert "odds_source_unmapped:J1:odds_api_io" in fixed_live_leagues.issues
             assert "odds_source_unmapped:LIGA_MX:odds_api_io" in fixed_live_leagues.issues
 
@@ -208,14 +271,16 @@ def main() -> None:
                 include_past=True,
             )
             operations = {(operation.kind, operation.league_code): operation for operation in auto.operations}
-            assert operations[("fixtures", "BRA_SERIE_A")].source == "odds_api_io", (
-                "auto fixtures should use Odds-API.io events when API-FOOTBALL mapping is unavailable"
+            assert operations[("fixtures", "BRA_SERIE_A")].source == "qqsd", (
+                "auto fixtures should prefer QQSD before free API fallbacks"
             )
-            assert operations[("odds", "J1")].source == "api_football", (
-                "auto odds should fall back to API-FOOTBALL when Odds-API.io slug is unavailable"
+            assert operations[("odds", "J1")].source == "qqsd", (
+                "auto odds should prefer QQSD even when free API mappings exist"
             )
-            assert operations[("odds", "ARG_PRIMERA")].source == "api_football"
-            assert operations[("odds", "LIGA_MX")].source == "api_football"
+            assert operations[("odds", "ARG_PRIMERA")].source == "qqsd"
+            assert operations[("odds", "LIGA_MX")].source == "qqsd"
+            assert operations[("fixtures", "FIN_VEIKKAUSLIIGA")].source == "qqsd"
+            assert operations[("odds", "FIN_VEIKKAUSLIIGA")].source == "qqsd"
             assert not any("source_unmapped" in issue for issue in auto.issues), (
                 "auto source selection should avoid unmapped live-league refresh operations"
             )
@@ -231,7 +296,7 @@ def main() -> None:
             service = AnalysisService(settings, repository)
             guarded_ingestion = FakeIngestion(
                 fixture_inserted=1,
-                odds_inserted_by_source={"odds_api_io": 0, "api_football": 1},
+                odds_inserted_by_source={"qqsd": 0, "odds_api_io": 1, "api_football": 1},
             )
             service.ingestion = guarded_ingestion  # type: ignore[assignment]
 
@@ -244,14 +309,14 @@ def main() -> None:
                 max_events=1,
                 include_past=True,
             )
-            assert ("odds", "api_football", "LALIGA", "2026-01-18", 1) not in guarded_ingestion.calls, (
+            assert ("odds", "odds_api_io", "LALIGA", None, 1) not in guarded_ingestion.calls, (
                 "live-leagues scan should not spend fallback odds quota by default"
             )
-            assert "odds_fallback_skipped:LALIGA:api_football" in guarded.issues
+            assert "odds_fallback_skipped:LALIGA:odds_api_io" in guarded.issues
 
             allowed_ingestion = FakeIngestion(
                 fixture_inserted=1,
-                odds_inserted_by_source={"odds_api_io": 0, "api_football": 1},
+                odds_inserted_by_source={"qqsd": 0, "odds_api_io": 1},
             )
             service.ingestion = allowed_ingestion  # type: ignore[assignment]
             allowed = run_live_refresh(
@@ -262,8 +327,8 @@ def main() -> None:
                 include_past=True,
                 allow_odds_fallback=True,
             )
-            assert ("odds", "api_football", "LALIGA", "2026-01-18", 1) in allowed_ingestion.calls
-            assert "odds_source_fallback:LALIGA:odds_api_io->api_football" in allowed.issues
+            assert ("odds", "odds_api_io", "LALIGA", None, 1) in allowed_ingestion.calls
+            assert "odds_source_fallback:LALIGA:qqsd->odds_api_io" in allowed.issues
         finally:
             repository.close()
 
@@ -288,8 +353,8 @@ def main() -> None:
             )
             assert "odds_source_unmapped:J1:odds_api_io" in unmapped.issues
             assert fake_ingestion.calls == [
-                ("fixtures", "api_football", "J1", "2026-01-18"),
-            ], "unmapped odds source should be skipped instead of reported as an executed empty refresh"
+                ("fixtures", "qqsd", "J1", "2026-01-18"),
+            ], "unmapped explicit odds source should be skipped while fixtures still use QQSD first"
             odds_operations = [operation for operation in unmapped.operations if operation.kind == "odds"]
             assert odds_operations and odds_operations[0].executed is False
         finally:
@@ -357,6 +422,9 @@ def main() -> None:
         from football_analysis.api import app
 
         client = TestClient(app)
+        headers = {}
+        if token := os.environ.get("FOOTBALL_ADMIN_TOKEN"):
+            headers["x-football-admin-token"] = token
         response = client.post(
             "/live/refresh",
             params={
@@ -365,6 +433,7 @@ def main() -> None:
                 "dry_run": True,
                 "allow_odds_fallback": True,
             },
+            headers=headers,
         )
         assert response.status_code == 200
         assert response.json()["allow_odds_fallback"] is True

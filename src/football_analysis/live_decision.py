@@ -40,6 +40,8 @@ def run_live_decision(
     seasons: list[str] | None = None,
     full_profile_audit: bool = False,
     checked_at: datetime | None = None,
+    league_codes: set[str] | None = None,
+    require_strategy_profiles: bool = True,
 ) -> LiveDecisionReport:
     """Build one reproducible go/no-go snapshot for real-money operation."""
     now = checked_at or datetime.now(settings.app.tzinfo)
@@ -65,6 +67,8 @@ def run_live_decision(
         settings,
         include_past=include_past,
         checked_at=now,
+        league_codes=league_codes,
+        require_strategy_profiles=require_strategy_profiles,
     )
     status, ready_to_bet, action, issues = _decision(profile_audit, live_review, preflight)
     return LiveDecisionReport(
@@ -86,6 +90,8 @@ def run_live_decision(
             "include_past": include_past,
             "include_paper": include_paper,
             "profile_audit_mode": profile_audit_mode,
+            "league_codes": sorted(league_codes or []),
+            "require_strategy_profiles": require_strategy_profiles,
             "active_strategy_profiles": [profile.id for profile in settings.strategy_profiles if profile.active],
         },
         profile_audit=profile_audit,

@@ -14,7 +14,12 @@ class OddsApiIoClient:
         self.context = context
 
     def events(self, sport: str = "football", league: str | None = None) -> list[Match]:
-        payload = self._get("/events", {"sport": sport, "league": league})
+        try:
+            payload = self._get("/events", {"sport": sport, "league": league})
+        except DataSourceError as exc:
+            if str(exc) == "HTTP 404":
+                return []
+            raise
         return map_events(payload)
 
     def odds(self, event_id: str, sport: str = "football", bookmakers: str | None = None) -> list[OddsSnapshot]:

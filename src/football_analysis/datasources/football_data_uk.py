@@ -12,12 +12,13 @@ from football_analysis.datasources.base import ClientContext, DataSourceError
 
 class FootballDataUkClient:
     provider = "football_data_uk"
+    extra_league_codes = {"BRA", "JPN", "USA"}
 
     def __init__(self, context: ClientContext):
         self.context = context
 
     def download_csv(self, league: str, season: str) -> str:
-        endpoint = f"/mmz4281/{season}/{league}.csv"
+        endpoint = _csv_endpoint(league, season)
         response = self.context.http.get_text(
             provider=self.provider,
             url=f"{self.context.source.base_url.rstrip('/')}{endpoint}",
@@ -36,35 +37,43 @@ class FootballDataUkClient:
         return parse_csv_text(league, season, path.read_text(encoding="utf-8-sig"))
 
 
+def _csv_endpoint(league: str, season: str) -> str:
+    code = league.upper()
+    if code in FootballDataUkClient.extra_league_codes:
+        return f"/new/{code}.csv"
+    return f"/mmz4281/{season}/{code}.csv"
+
+
 def parse_csv_text(league: str, season: str, text: str) -> list[HistoricalMatchRow]:
     rows: list[HistoricalMatchRow] = []
     reader = csv.DictReader(StringIO(text))
     for raw in reader:
-        if not raw.get("Date") or not raw.get("HomeTeam") or not raw.get("AwayTeam"):
+        home = _first_text(raw, ["HomeTeam", "Home"])
+        away = _first_text(raw, ["AwayTeam", "Away"])
+        if not raw.get("Date") or not home or not away:
             continue
         date = _parse_date(raw["Date"])
-        home = raw["HomeTeam"].strip()
-        away = raw["AwayTeam"].strip()
-        row_id = f"football_data_uk:{league}:{season}:{date.date()}:{home}:{away}"
+        row_season = _first_text(raw, ["Season"]) or season
+        row_id = f"football_data_uk:{league}:{row_season}:{date.date()}:{home}:{away}"
         rows.append(
             HistoricalMatchRow(
                 id=row_id,
                 league=league,
-                season=season,
+                season=row_season,
                 date=date,
                 home_team=home,
                 away_team=away,
-                home_goals=_safe_int(raw.get("FTHG")),
-                away_goals=_safe_int(raw.get("FTAG")),
-                home_odds=_first_float(raw, ["B365H", "PSH", "MaxH", "AvgH"]),
-                draw_odds=_first_float(raw, ["B365D", "PSD", "MaxD", "AvgD"]),
-                away_odds=_first_float(raw, ["B365A", "PSA", "MaxA", "AvgA"]),
-                max_home_odds=_first_float(raw, ["MaxH", "B365H", "PSH"]),
-                max_draw_odds=_first_float(raw, ["MaxD", "B365D", "PSD"]),
-                max_away_odds=_first_float(raw, ["MaxA", "B365A", "PSA"]),
-                avg_home_odds=_first_float(raw, ["AvgH", "B365H", "PSH"]),
-                avg_draw_odds=_first_float(raw, ["AvgD", "B365D", "PSD"]),
-                avg_away_odds=_first_float(raw, ["AvgA", "B365A", "PSA"]),
+                home_goals=_safe_int(_first_text(raw, ["FTHG", "HG"])),
+                away_goals=_safe_int(_first_text(raw, ["FTAG", "AG"])),
+                home_odds=_first_float(raw, ["B365H", "PSH", "PSCH", "MaxH", "MaxCH", "AvgH", "AvgCH"]),
+                draw_odds=_first_float(raw, ["B365D", "PSD", "PSCD", "MaxD", "MaxCD", "AvgD", "AvgCD"]),
+                away_odds=_first_float(raw, ["B365A", "PSA", "PSCA", "MaxA", "MaxCA", "AvgA", "AvgCA"]),
+                max_home_odds=_first_float(raw, ["MaxH", "MaxCH", "B365H", "B365CH", "PSH", "PSCH"]),
+                max_draw_odds=_first_float(raw, ["MaxD", "MaxCD", "B365D", "B365CD", "PSD", "PSCD"]),
+                max_away_odds=_first_float(raw, ["MaxA", "MaxCA", "B365A", "B365CA", "PSA", "PSCA"]),
+                avg_home_odds=_first_float(raw, ["AvgH", "AvgCH", "B365H", "B365CH", "PSH", "PSCH"]),
+                avg_draw_odds=_first_float(raw, ["AvgD", "AvgCD", "B365D", "B365CD", "PSD", "PSCD"]),
+                avg_away_odds=_first_float(raw, ["AvgA", "AvgCA", "B365A", "B365CA", "PSA", "PSCA"]),
                 ah_line=_first_float(raw, ["AHh", "BbAHh"]),
                 ah_home_odds=_first_float(raw, ["MaxAHH", "BbMxAHH", "B365AHH", "PAHH"]),
                 ah_away_odds=_first_float(raw, ["MaxAHA", "BbMxAHA", "B365AHA", "PAHA"]),
@@ -87,6 +96,14 @@ def _parse_date(value: str) -> datetime:
         except ValueError:
             pass
     raise DataSourceError(f"invalid_date:{value}")
+
+
+def _first_text(raw: dict[str, Any], keys: list[str]) -> str | None:
+    for key in keys:
+        value = raw.get(key)
+        if value not in {None, ""}:
+            return str(value).strip()
+    return None
 
 
 def _safe_int(value: Any) -> int | None:

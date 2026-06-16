@@ -69,30 +69,18 @@ def run_live_refresh(
         issues.append("no_refreshable_strategy_profile_leagues")
 
     for league_code in leagues:
-        resolved_source, mapping_issue = _resolve_source(
-            service.settings,
-            league_code,
-            requested_source=fixture_source,
-            kind="fixtures",
-        )
-        operation = LiveRefreshOperation(
-            kind="fixtures",
-            source=resolved_source,
+        fixture_operations, league_fixture_results, league_fixture_issues, fixture_empty = _run_fixture_refresh_operations(
+            service=service,
             league_code=league_code,
             date=date,
-            executed=not dry_run and mapping_issue is None,
+            requested_source=fixture_source,
+            dry_run=dry_run,
         )
-        if mapping_issue is not None:
-            issues.append(mapping_issue)
-        elif not dry_run:
-            result = service.ingestion.ingest_fixtures(date=date, source=resolved_source, league_code=league_code)
-            fixture_results.append(result)
-            operation = _operation_with_result(operation, result)
-            issues.extend(f"fixtures:{league_code}:{error}" for error in result.errors)
-            if _empty_ingestion(result):
-                issues.append(f"fixtures_refresh_empty:{league_code}")
-                empty_fixture_leagues.add(league_code)
-        operations.append(operation)
+        operations.extend(fixture_operations)
+        fixture_results.extend(league_fixture_results)
+        issues.extend(league_fixture_issues)
+        if fixture_empty:
+            empty_fixture_leagues.add(league_code)
 
     for league_code in leagues:
         odds_operations, league_odds_results, league_issues, odds_empty = _run_odds_refresh_operations(
@@ -130,6 +118,8 @@ def run_live_refresh(
         service.settings,
         include_past=include_past,
         checked_at=checked_at,
+        league_codes=set(leagues),
+        require_strategy_profiles=not (league or scope.strip().lower() == "live-leagues"),
     )
     issues.extend(f"preflight:{issue}" for issue in preflight.issues)
     return LiveRefreshReport(
@@ -166,6 +156,70 @@ def _operation_with_result(operation: LiveRefreshOperation, result: IngestionRes
 
 def _empty_ingestion(result: IngestionResult) -> bool:
     return result.inserted == 0 and result.updated == 0 and not result.errors
+
+
+def _run_fixture_refresh_operations(
+    service: AnalysisService,
+    league_code: str,
+    date: str,
+    requested_source: str,
+    dry_run: bool,
+) -> tuple[list[LiveRefreshOperation], list[IngestionResult], list[str], bool]:
+    operations: list[LiveRefreshOperation] = []
+    results: list[IngestionResult] = []
+    issues: list[str] = []
+    normalized_source = requested_source.strip().lower()
+    candidates = _mapped_sources(
+        service.settings,
+        league_code=league_code,
+        requested_source=requested_source,
+        kind="fixtures",
+    )
+
+    if not candidates:
+        issues.append(f"fixtures_source_unmapped:{league_code}:{requested_source}")
+        operations.append(
+            LiveRefreshOperation(
+                kind="fixtures",
+                source=requested_source,
+                league_code=league_code,
+                date=date,
+                executed=False,
+            )
+        )
+        return operations, results, issues, False
+
+    attempted_empty = False
+    for index, source in enumerate(candidates):
+        operation = LiveRefreshOperation(
+            kind="fixtures",
+            source=source,
+            league_code=league_code,
+            date=date,
+            executed=not dry_run,
+        )
+        if dry_run:
+            operations.append(operation)
+            break
+
+        result = service.ingestion.ingest_fixtures(date=date, source=source, league_code=league_code)
+        results.append(result)
+        operation = _operation_with_result(operation, result)
+        operations.append(operation)
+        issues.extend(f"fixtures:{league_code}:{error}" for error in result.errors)
+
+        if not _empty_ingestion(result) and not result.errors:
+            return operations, results, issues, False
+
+        attempted_empty = attempted_empty or _empty_ingestion(result)
+        if normalized_source != "auto" or index + 1 >= len(candidates):
+            if _empty_ingestion(result):
+                issues.append(f"fixtures_refresh_empty:{league_code}")
+            return operations, results, issues, attempted_empty
+
+        issues.append(f"fixture_source_fallback:{league_code}:{source}->{candidates[index + 1]}")
+
+    return operations, results, issues, attempted_empty
 
 
 def _run_odds_refresh_operations(
@@ -288,7 +342,7 @@ def _resolve_source(
     normalized = requested_source.strip().lower()
     if normalized != "auto":
         return requested_source, _source_mapping_issue(settings, league_code, requested_source, kind=kind)
-    for source in _source_preferences(kind):
+    for source in _source_preferences(kind, league_code=league_code):
         if _source_mapping_issue(settings, league_code, source, kind=kind) is None:
             return source, None
     return "auto", f"{kind}_source_unmapped:{league_code}:auto"
@@ -305,16 +359,16 @@ def _mapped_sources(
         return [] if _source_mapping_issue(settings, league_code, requested_source, kind=kind) else [requested_source]
     return [
         source
-        for source in _source_preferences(kind)
+        for source in _source_preferences(kind, league_code=league_code)
         if _source_mapping_issue(settings, league_code, source, kind=kind) is None
     ]
 
 
-def _source_preferences(kind: str) -> list[str]:
+def _source_preferences(kind: str, league_code: str | None = None) -> list[str]:
     if kind == "fixtures":
-        return ["api_football", "football_data_org", "odds_api_io"]
+        return ["qqsd", "api_football", "football_data_org", "sportmonks", "odds_api_io"]
     if kind == "odds":
-        return ["odds_api_io", "api_football"]
+        return ["qqsd", "odds_api_io", "sportmonks", "api_football", "the_odds_api"]
     return []
 
 
@@ -332,6 +386,21 @@ def _source_mapping_issue(settings: Settings, league_code: str, source: str, kin
         return f"{kind}_source_unmapped:{league_code}:{source}"
     if source == "odds_api_io":
         if league.odds_api_slug:
+            return None
+        return f"{kind}_source_unmapped:{league_code}:{source}"
+    if source == "the_odds_api" and kind == "odds":
+        configured = settings.data_sources.get("the_odds_api")
+        sport_keys = configured.sport_keys if configured is not None else {}
+        if league.code in sport_keys or (league.odds_api_slug and league.odds_api_slug in sport_keys):
+            return None
+        return f"{kind}_source_unmapped:{league_code}:{source}"
+    if source == "sportmonks":
+        if league.sportmonks_league_id:
+            return None
+        return f"{kind}_source_unmapped:{league_code}:{source}"
+    if source == "qqsd":
+        configured = settings.data_sources.get("qqsd")
+        if configured is not None and configured.enabled:
             return None
         return f"{kind}_source_unmapped:{league_code}:{source}"
     return None
@@ -392,6 +461,6 @@ def _league_identifiers(league: LeagueSettings) -> set[str]:
 
 
 def _odds_date_for_source(source: str, date: str) -> str | None:
-    if source == "api_football":
+    if source in {"api_football", "qqsd"}:
         return date
     return None

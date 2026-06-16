@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StorageSettings(BaseModel):
@@ -49,6 +49,7 @@ class LiveTradingSettings(BaseModel):
     review_pause_roi: float = -0.15
     max_stake_units_per_pick: float = Field(default=0.5, ge=0.0)
     max_daily_stake_units: float = Field(default=1.2, ge=0.0)
+    world_cup_final_window_gate_enabled: bool = False
 
 
 class TierPolicySettings(BaseModel):
@@ -68,7 +69,24 @@ class SourceSettings(BaseModel):
     base_url: str
     api_key_env: str | None = None
     bookmakers: list[str] = Field(default_factory=list)
+    regions: list[str] = Field(default_factory=list)
+    markets: list[str] = Field(default_factory=list)
+    sport_keys: dict[str, str] = Field(default_factory=dict)
     free_tier_note: str | None = None
+
+
+class ExecutionBrokerSettings(BaseModel):
+    name: str
+    enabled: bool = False
+    provider: str
+    base_url: str
+    credential_envs: list[str] = Field(default_factory=list)
+    required_match_external_ids: list[str] = Field(default_factory=list)
+    required_selection_external_ids: list[str] = Field(default_factory=list)
+    stake_currency: str = "GBP"
+    stake_currency_per_unit: float | None = Field(default=None, gt=0.0)
+    official_url: str | None = None
+    notes: str | None = None
 
 
 class IngestionSettings(BaseModel):
@@ -77,6 +95,9 @@ class IngestionSettings(BaseModel):
     default_lookahead_days: int = 2
     default_lookback_days: int = 0
     store_raw_payloads: bool = True
+    qqsd_live_context_enabled: bool = True
+    qqsd_odds_timeline_enabled: bool = True
+    qqsd_timeline_company_name: str = "Pinnacle"
 
 
 class CacheSettings(BaseModel):
@@ -103,6 +124,7 @@ class LeagueSettings(BaseModel):
     country: str | None = None
     season: int | None = None
     api_football_league_id: int | None = None
+    sportmonks_league_id: int | None = None
     odds_api_slug: str | None = None
     football_data_org_code: str | None = None
     football_data_uk_code: str | None = None
@@ -123,6 +145,8 @@ class BacktestSettings(BaseModel):
 
 
 class StrategyProfileSettings(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     id: str
     name: str
     league_code: str
@@ -178,6 +202,7 @@ class Settings(BaseModel):
     tier_policies: dict[str, TierPolicySettings] = Field(default_factory=dict)
     thresholds: ThresholdSettings = Field(default_factory=ThresholdSettings)
     data_sources: dict[str, SourceSettings] = Field(default_factory=dict)
+    execution_brokers: dict[str, ExecutionBrokerSettings] = Field(default_factory=dict)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 
 

@@ -18,6 +18,9 @@ ingestion:
   default_lookahead_days: 2
   default_lookback_days: 0
   store_raw_payloads: true
+  qqsd_live_context_enabled: true
+  qqsd_odds_timeline_enabled: true
+  qqsd_timeline_company_name: Pinnacle
 
 cache:
   enabled: true
@@ -140,12 +143,15 @@ leagues:
     aliases:
       - World - FIFA World Cup
       - International - FIFA World Cup
+      - 世界杯
+      - FIFA世界杯
+      - 国际足联世界杯
     tier: major_tournament
     analysis_depth: deep
-    strategy_mode: paper
+    strategy_mode: live
     min_bookmakers: 2
     max_events: 20
-    paper_only: true
+    paper_only: false
   - code: EURO
     name: Euro Championship
     country: World
@@ -177,6 +183,7 @@ leagues:
     country: Japan
     season: 2026
     api_football_league_id: 98
+    football_data_uk_code: JPN
     aliases:
       - Japan - J1 League
     tier: secondary_professional
@@ -193,6 +200,100 @@ leagues:
     odds_api_slug: australia-a-league
     aliases:
       - Australia - A-League
+      - Australia League A
+      - 澳大利亚甲级联赛
+      - 澳大利亚超级联赛
+      - 澳超
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: AUS_ACT_NPL
+    name: Australia Capital Territory NPL
+    country: Australia
+    season: 2026
+    aliases:
+      - Australia Capital Territory NPL
+      - Australia Capital Territory Premier League
+      - 澳大利亚首都直辖区超级联赛
+      - 澳首超
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: AUS_NPL_QLD
+    name: Australia Queensland NPL
+    country: Australia
+    season: 2026
+    aliases:
+      - Australia Queensland NPL
+      - Australia Queensland Premier League
+      - 澳大利亚昆士兰州超级联赛
+      - 澳昆超
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: AUS_NPL_SA
+    name: Australia South Australia NPL
+    country: Australia
+    season: 2026
+    aliases:
+      - Australia South Australia NPL
+      - Australia South Australia Premier League
+      - 澳大利亚南部超级联赛
+      - 澳南超
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: AUS_NPL_TAS
+    name: Australia Tasmania NPL
+    country: Australia
+    season: 2026
+    aliases:
+      - Australia Tasmania NPL
+      - Australia Tasmania Premier League
+      - 澳大利亚塔斯玛尼亚超级联赛
+      - 澳塔超
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: AUS_NPL_VIC
+    name: Australia Victoria NPL
+    country: Australia
+    season: 2026
+    aliases:
+      - Australia Victoria NPL
+      - Australia Victoria Premier League
+      - 澳大利亚维多利亚超级联赛
+      - 澳维超
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
+  - code: AUS_NPL_WA
+    name: Australia Western Australia NPL
+    country: Australia
+    season: 2026
+    aliases:
+      - Australia Western Australia NPL
+      - Australia Western Australia Premier League
+      - 澳大利亚西部超级联赛
+      - 澳西超
     tier: secondary_professional
     analysis_depth: standard
     strategy_mode: live
@@ -220,6 +321,7 @@ leagues:
     season: 2026
     api_football_league_id: 253
     odds_api_slug: usa-mls
+    football_data_uk_code: USA
     aliases:
       - USA - Major League Soccer
       - USA - MLS
@@ -232,7 +334,10 @@ leagues:
   - code: BRA_SERIE_A
     name: Brasileiro Serie A
     country: Brazil
+    season: 2026
+    api_football_league_id: 71
     odds_api_slug: brazil-brasileiro-serie-a
+    football_data_uk_code: BRA
     aliases:
       - Brazil - Brasileiro Serie A
     tier: secondary_professional
@@ -267,10 +372,32 @@ leagues:
     min_bookmakers: 2
     max_events: 12
     paper_only: false
+  - code: FIN_VEIKKAUSLIIGA
+    name: Veikkausliiga
+    country: Finland
+    season: 2026
+    api_football_league_id: 244
+    aliases:
+      - Finland - Veikkausliiga
+      - Finnish Veikkausliga
+      - 芬超
+      - 芬兰超级联赛
+    tier: secondary_professional
+    analysis_depth: standard
+    strategy_mode: live
+    min_bookmakers: 2
+    max_events: 12
+    paper_only: false
 
 tier_policies:
   elite_club:
-    label: live_scoring
+    label: elite_live_small_stake
+    min_data_quality: 0.74
+    min_value_score: 62.0
+    max_risk_score: 55.0
+    min_confidence: 0.52
+    max_stake_units: 0.5
+    min_bookmakers: 2
   secondary_professional:
     label: secondary_live_small_stake
     min_data_quality: 0.75
@@ -281,10 +408,10 @@ tier_policies:
     min_bookmakers: 2
   major_tournament:
     label: tournament_live_small_stake
-    min_data_quality: 0.78
-    min_value_score: 70.0
-    max_risk_score: 42.0
-    min_confidence: 0.60
+    min_data_quality: 0.74
+    min_value_score: 62.0
+    max_risk_score: 55.0
+    min_confidence: 0.52
     max_stake_units: 0.5
     min_bookmakers: 2
 
@@ -296,7 +423,7 @@ backtest:
 live_trading:
   enabled: true
   min_bookmakers: 2
-  max_odds_age_minutes: 90
+  max_odds_age_minutes: 180
   max_execution_odds_slippage: 0.01
   min_data_quality: 0.82
   min_value_score: 68.0
@@ -321,8 +448,41 @@ live_trading:
   review_pause_roi: -0.15
   max_stake_units_per_pick: 0.5
   max_daily_stake_units: 1.2
+  world_cup_final_window_gate_enabled: false
 
 strategy_profiles:
+  - id: world_cup_high_winrate
+    name: World Cup high win-rate 1x2 controlled live profile
+    league_code: WORLD_CUP
+    market_type: 1x2
+    selections:
+      - HOME
+      - AWAY
+    season_phases:
+      - all
+    stability_label: high_winrate_controlled_live
+    roi: 0.082
+    hit_rate: 0.672
+    settled_bets: 168
+    positive_folds: 4
+    fold_count: 5
+    average_clv: 0.018
+    live_enabled: true
+    max_stake_units: 0.5
+    long_horizon_roi: 0.082
+    long_horizon_settled_bets: 168
+    holdout_roi: 0.091
+    holdout_settled_bets: 96
+    holdout_positive_seasons: 4
+    holdout_season_count: 5
+    worst_season_roi: -0.11
+    max_drawdown_units: 3.4
+    sample_scope:
+      - WORLD_CUP
+      - EURO
+      - COPA_AMERICA
+      - ASIAN_CUP
+      - AFCON
   - id: i1_middle_ah_away_live_long_horizon
     name: I1 middle-season AH away live candidate
     league_code: I1
@@ -346,6 +506,29 @@ strategy_profiles:
     holdout_positive_seasons: 5
     holdout_season_count: 7
     worst_season_roi: -0.1737
+  - id: bra_all_home_live_long_horizon
+    name: BRA all-season 1x2 home live candidate
+    league_code: BRA
+    market_type: 1x2
+    selections:
+      - HOME
+    season_phases:
+      - all
+    stability_label: live_candidate
+    roi: 0.143
+    settled_bets: 375
+    positive_folds: 10
+    fold_count: 15
+    average_clv: 0.0736
+    live_enabled: true
+    max_stake_units: 0.3
+    long_horizon_roi: 0.143
+    long_horizon_settled_bets: 375
+    holdout_roi: 0.1885
+    holdout_settled_bets: 200
+    holdout_positive_seasons: 6
+    holdout_season_count: 8
+    worst_season_roi: -0.2496
   - id: e0_all_home_robust
     name: E0 all-season home value
     league_code: E0
@@ -439,6 +622,80 @@ data_sources:
     name: football-data.co.uk
     enabled: true
     base_url: https://www.football-data.co.uk
+  the_odds_api:
+    name: The Odds API
+    enabled: true
+    base_url: https://api.the-odds-api.com/v4
+    api_key_env: THE_ODDS_API_KEY
+    regions:
+      - uk
+      - eu
+    markets:
+      - h2h
+      - spreads
+      - totals
+    sport_keys:
+      EPL: soccer_epl
+      LALIGA: soccer_spain_la_liga
+      SERIE_A: soccer_italy_serie_a
+      BUNDESLIGA: soccer_germany_bundesliga
+      LIGUE_1: soccer_france_ligue_one
+      MLS: soccer_usa_mls
+      ARG_PRIMERA: soccer_argentina_primera_division
+      A_LEAGUE: soccer_australia_aleague
+      K_LEAGUE_1: soccer_korea_kleague1
+      J1: soccer_japan_j_league
+      LIGA_MX: soccer_mexico_ligamx
+      WORLD_CUP: soccer_fifa_world_cup
+    free_tier_note: "Historical odds are paid snapshots; use only after subscribing to a plan that covers required soccer leagues and markets."
+  sportmonks:
+    name: Sportmonks Football API
+    enabled: true
+    base_url: https://api.sportmonks.com/v3/football
+    api_key_env: SPORTMONKS_TOKEN
+    free_tier_note: "Premium Odds Feed is a paid add-on; historical odds are available only in the provider's supported window."
+  exa:
+    name: Exa Search API
+    enabled: true
+    base_url: https://api.exa.ai
+    api_key_env: EXA_API_KEY
+    free_tier_note: "Used for pre-match research evidence. Store the key in EXA_API_KEY; do not commit secrets."
+  firecrawl:
+    name: Firecrawl Search API
+    enabled: true
+    base_url: https://api.firecrawl.dev
+    api_key_env: FIRECRAWL_API_KEY
+    free_tier_note: "Fallback provider for pre-match research evidence. Store the key in FIRECRAWL_API_KEY; do not commit secrets."
+  tavily:
+    name: Tavily Search API
+    enabled: true
+    base_url: https://api.tavily.com
+    api_key_env: TAVILY_API_KEY
+    free_tier_note: "Supplemental search provider for pre-match research evidence. Store the key in TAVILY_API_KEY; do not commit secrets."
+  qqsd:
+    name: 球球是道 API
+    enabled: true
+    base_url: https://i.qqshidao.com
+    api_key_env: QQSD_C_CK
+    free_tier_note: "补充赛事/比分/赔率缺口；QQSD_C_CK is the c_ck token. Some endpoints may allow empty c_ck only when QQSD_ALLOW_EMPTY_C_CK=1 is explicitly set."
+
+execution_brokers:
+  betfair_exchange:
+    name: Betfair Exchange API-NG
+    enabled: false
+    provider: betfair
+    base_url: https://api.betfair.com/exchange/betting/json-rpc/v1
+    credential_envs:
+      - BETFAIR_APP_KEY
+      - BETFAIR_SESSION_TOKEN
+    required_match_external_ids:
+      - betfair_market_id
+    required_selection_external_ids:
+      - betfair_selection_id
+    stake_currency: GBP
+    stake_currency_per_unit:
+    official_url: https://docs.developer.betfair.com/
+    notes: "Requires an approved Betfair developer account, application key, session token, marketId, selectionId, and a configured stake_currency_per_unit before order placement can be automated."
 
 telegram:
   bot_token_env: TELEGRAM_BOT_TOKEN

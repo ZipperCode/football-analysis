@@ -257,6 +257,7 @@ def _live_gate_failures(
         gates_failed.append("live_trading_disabled")
     if recommendation.status is not RecommendationStatus.recommended:
         gates_failed.append(f"live_status_not_recommended:{recommendation.status.value}")
+    gates_failed.extend(_world_cup_final_gate_failures(recommendation, match, settings))
     if profile is None and not profileless_live_allowed:
         gates_failed.append("live_missing_strategy_profile")
     elif profile is not None and not profile.live_enabled:
@@ -299,10 +300,46 @@ def _profileless_live_allowed(recommendation: Recommendation) -> bool:
         or recommendation.odds_basis.get("strategy_confidence_class")
         or ""
     )
-    if confidence_class not in {"secondary_live_small_stake", "tournament_live_small_stake"}:
+    if confidence_class not in {
+        "elite_live_small_stake",
+        "secondary_live_small_stake",
+        "tournament_live_small_stake",
+    }:
         return False
     tier_policy = recommendation.score_breakdown.get("tier_policy") or recommendation.odds_basis.get("tier_policy")
     return isinstance(tier_policy, dict) and tier_policy.get("passed") is True
+
+
+def _world_cup_final_gate_failures(
+    recommendation: Recommendation,
+    match: Match,
+    settings: Settings,
+) -> list[str]:
+    league = next(
+        (
+            item
+            for item in settings.leagues
+            if item.code.upper() == "WORLD_CUP"
+            and match.league.strip().lower()
+            in {str(value).strip().lower() for value in [item.code, item.name, *(item.aliases or [])] if value}
+        ),
+        None,
+    )
+    if league is None:
+        return []
+    if league.strategy_mode != "live" or league.paper_only:
+        return []
+    market_type = recommendation.market_type.value if recommendation.market_type else None
+    if market_type != "1x2":
+        return ["world_cup_market_not_1x2"]
+    gate = (
+        recommendation.score_breakdown.get("world_cup_high_winrate")
+        or recommendation.odds_basis.get("world_cup_high_winrate")
+        or {}
+    )
+    if isinstance(gate, dict) and gate.get("stage") == "final" and gate.get("passed") is True:
+        return []
+    return ["world_cup_final_gate_required"]
 
 
 def _effective_tier_threshold(

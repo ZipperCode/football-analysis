@@ -8,6 +8,7 @@ from pydantic import Field
 from football_analysis.db import StructuredRepository
 from football_analysis.live_gate import _recent_consecutive_losses
 from football_analysis.models import AppModel, BetLog, Match, RecommendationStatus
+from football_analysis.odds_readiness import _match_in_league_codes
 from football_analysis.service import AnalysisService
 from football_analysis.settings import Settings
 
@@ -51,18 +52,32 @@ def audit_live_trading(
     settings: Settings,
     include_past: bool = False,
     checked_at: datetime | None = None,
+    league_codes: set[str] | None = None,
 ) -> LiveAuditReport:
-    now = checked_at or datetime.now(settings.app.tzinfo)
+    now = _sortable_kickoff_at(checked_at or datetime.now(settings.app.tzinfo), settings)
+    scoped_league_codes = {code.upper() for code in league_codes or set()}
     service = AnalysisService(settings, repository)
     matches = [
         match
         for match in repository.list_models("matches", Match)
-        if include_past or match.kickoff_at.astimezone(settings.app.tzinfo).date() >= now.date()
+        if include_past or _sortable_kickoff_at(match.kickoff_at, settings) > now
     ]
+    if scoped_league_codes:
+        matches = [
+            match
+            for match in matches
+            if _match_in_league_codes(match, settings, scoped_league_codes)
+        ]
     analyses = [service._score_analysis(match.id) for match in matches]
     analyses = service._allocate_analysis_recommendations(analyses)
     items = [_audit_item(analysis.recommendation, analysis.match) for analysis in analyses]
-    items.sort(key=lambda item: (not item.live_gate_passed, -item.value_score, item.kickoff_at))
+    items.sort(
+        key=lambda item: (
+            not item.live_gate_passed,
+            -item.value_score,
+            _sortable_kickoff_at(item.kickoff_at, settings),
+        )
+    )
     bet_logs = repository.list_models("bets", BetLog)
     recent_losses = _recent_consecutive_losses(bet_logs)
     gate_counts = Counter(gate for item in items for gate in item.gates_failed)
@@ -117,6 +132,12 @@ def _audit_item(recommendation, match: Match) -> LiveAuditItem:
         gates_failed=list(live_gate.get("gates_failed", [])),
         reason=recommendation.reason,
     )
+
+
+def _sortable_kickoff_at(value: datetime, settings: Settings) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=settings.app.tzinfo)
+    return value.astimezone(settings.app.tzinfo)
 
 
 def _audit_status(items: list[LiveAuditItem], issues: list[str]) -> str:

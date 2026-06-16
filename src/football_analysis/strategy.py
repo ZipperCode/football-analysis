@@ -411,6 +411,11 @@ def audit_strategy_profiles(
             )
             continue
 
+        world_cup_audit_item = _world_cup_profile_audit_item(profile)
+        if world_cup_audit_item is not None:
+            items.append(world_cup_audit_item)
+            continue
+
         long_horizon_candidate = _long_horizon_candidate_for_profile(repository, profile)
         if long_horizon_candidate is not None:
             drift = _long_horizon_profile_drift(profile, long_horizon_candidate, roi_tolerance, clv_tolerance)
@@ -1026,6 +1031,56 @@ def _profile_selection_from_params(params: dict) -> str:
     return selection_bias or "all"
 
 
+def _world_cup_profile_audit_item(profile: StrategyProfileSettings) -> StrategyProfileAuditItem | None:
+    if profile.id != "world_cup_high_winrate":
+        return None
+    payload = profile.model_dump(mode="json")
+    hit_rate = _safe_profile_float(payload.get("hit_rate") or payload.get("win_rate") or payload.get("holdout_positive_rate"))
+    settled_bets = int(payload.get("settled_bets") or 0)
+    issues: list[str] = []
+    if str(payload.get("league_code") or "").upper() != "WORLD_CUP":
+        issues.append("league_code is not WORLD_CUP")
+    if str(payload.get("market_type") or "") != "1x2":
+        issues.append("market_type is not 1x2")
+    if payload.get("live_enabled") is not True:
+        issues.append("live_enabled is not true")
+    if hit_rate is None:
+        issues.append("hit_rate is missing")
+    elif hit_rate < 0.65:
+        issues.append(f"hit_rate {hit_rate:.3f} below 0.650")
+    if settled_bets < 80:
+        issues.append(f"settled_bets {settled_bets} below 80")
+    portfolio = {
+        "source": "world_cup_high_winrate_config",
+        "id": profile.id,
+        "league_code": "WORLD_CUP",
+        "market_type": "1x2",
+        "sample_scope": payload.get("sample_scope") or [],
+        "hit_rate": hit_rate,
+        "roi": _safe_profile_float(payload.get("roi")),
+        "settled_bets": settled_bets,
+        "max_drawdown_units": _safe_profile_float(payload.get("max_drawdown_units")),
+        "holdout_roi": _safe_profile_float(payload.get("holdout_roi")),
+        "holdout_settled_bets": int(payload.get("holdout_settled_bets") or 0),
+    }
+    return StrategyProfileAuditItem(
+        profile_id=profile.id,
+        status="matched" if not issues else "stale",
+        message="profile matches World Cup high-winrate evidence" if not issues else "; ".join(issues),
+        configured=_profile_config_payload(profile),
+        portfolio=portfolio,
+    )
+
+
+def _safe_profile_float(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _profile_config_payload(profile: StrategyProfileSettings) -> dict:
     return {
         "id": profile.id,
@@ -1074,13 +1129,43 @@ def _long_horizon_candidate_for_profile(
     if family is None:
         return None
     try:
-        report = long_horizon_scan(repository, league=profile.league_code, family=family, quick=True)
+        report = long_horizon_scan(
+            repository,
+            league=profile.league_code,
+            family=family,
+            quick=True,
+            **_long_horizon_window_kwargs_for_profile(repository, profile),
+        )
     except ValueError:
         return None
     for candidate in report.candidates:
         if _long_horizon_candidate_matches_profile(profile, candidate):
             return candidate
     return None
+
+
+def _long_horizon_window_kwargs_for_profile(
+    repository: StructuredRepository,
+    profile: StrategyProfileSettings,
+) -> dict[str, str]:
+    seasons = sorted(
+        {
+            row.season
+            for row in repository.list_models("historical_matches", HistoricalMatchRow)
+            if row.league == profile.league_code.upper()
+        }
+    )
+    if len(seasons) < 2 or not all(
+        season.isdigit() and len(season) == 4 and int(season) >= 1900
+        for season in seasons
+    ):
+        return {}
+    split_index = max(1, min(len(seasons) - 1, len(seasons) // 2))
+    return {
+        "discovery_start": seasons[0],
+        "discovery_end": seasons[split_index - 1],
+        "holdout_start": seasons[split_index],
+    }
 
 
 def _profile_uses_long_horizon(profile: StrategyProfileSettings) -> bool:

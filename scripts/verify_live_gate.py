@@ -266,6 +266,27 @@ def main() -> None:
     assert "live_min_data_quality:0.76/0.82" not in secondary_tier_threshold_gate.risk_tags
     assert "live_max_risk_score:44.00/42.00" not in secondary_tier_threshold_gate.risk_tags
 
+    with TemporaryDirectory() as tmp:
+        settings = load_settings()
+        settings.app.fixture_mode = False
+        settings.storage.database_url = f"sqlite:///{Path(tmp) / 'verify-elite-coverage.db'}"
+        settings.strategy_profiles = []
+        repository = StructuredRepository(settings.storage.database_url)
+        repository.initialize()
+        try:
+            service = AnalysisService(settings, repository)
+            _insert_elite_profileless_candidate(repository, "elite-profileless-live-pass")
+            elite = service.analyze_match("elite-profileless-live-pass").recommendation
+            assert elite.status is RecommendationStatus.recommended, (
+                "elite_club tier policy should allow high-coverage profileless small-stake recommendations"
+            )
+            assert elite.stake_units == 0.5
+            assert elite.score_breakdown["strategy_confidence_class"] == "elite_live_small_stake"
+            assert elite.score_breakdown["live_gate"]["passed"] is True
+            assert "live_missing_strategy_profile" not in elite.risk_tags
+        finally:
+            repository.close()
+
     print("live gate verification passed")
 
 
@@ -365,6 +386,50 @@ def _secondary_live_odds(match_id: str) -> list[OddsSnapshot]:
         )
         for bookmaker, price in [("Bet365", 2.08), ("Pinnacle", 2.12)]
     ]
+
+
+def _insert_elite_profileless_candidate(repository: StructuredRepository, match_id: str) -> None:
+    repository.upsert_model(
+        "matches",
+        match_id,
+        Match(
+            id=match_id,
+            league="England - Premier League",
+            home_team="Elite Home",
+            away_team="Elite Away",
+            kickoff_at=datetime.now(timezone.utc) + timedelta(hours=8),
+            data_completeness=0.78,
+        ),
+    )
+    for index, bookmaker in enumerate(["Bet365", "Pinnacle"], start=1):
+        repository.upsert_model(
+            "odds",
+            f"{match_id}-odds-{index}",
+            OddsSnapshot(
+                id=f"{match_id}-odds-{index}",
+                match_id=match_id,
+                market_type="1x2",
+                source="odds_api_io",
+                bookmaker=bookmaker,
+                outcome_odds={"HOME": 2.1 + index * 0.02},
+                market_average={"HOME": 1.94},
+                best_price={"HOME": 2.12},
+                movement=0.015,
+                collected_at=datetime.now(timezone.utc),
+            ),
+        )
+    repository.upsert_model(
+        "findings",
+        f"{match_id}-coverage",
+        AgentFinding(
+            id=f"{match_id}-coverage",
+            match_id=match_id,
+            agent_name="Coverage Agent",
+            summary="Elite league market coverage is sufficient for a small-stake recommendation.",
+            confidence=0.65,
+            score_delta=4.0,
+        ),
+    )
 
 
 def _insert_negative_profile_sample(repository: StructuredRepository) -> None:

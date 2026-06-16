@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from football_analysis.contracts import ScoreBreakdown
-from football_analysis.models import AgentFinding, Match, OddsSnapshot, Recommendation, RecommendationStatus
+from football_analysis.models import AgentFinding, MarketType, Match, OddsSnapshot, Recommendation, RecommendationStatus
 from football_analysis.settings import LeagueSettings, Settings, StrategyProfileSettings, TierPolicySettings
 
 
@@ -17,6 +17,7 @@ class MarketEdge:
     source: str
     bookmaker: str
     movement: float
+    line: str | None = None
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -31,6 +32,10 @@ def _best_market_edge(odds_snapshots: list[OddsSnapshot]) -> MarketEdge | None:
             average = snapshot.market_average.get(selection)
             if not average or average <= 1.0 or price <= 1.0:
                 continue
+            if _is_price_outlier(price, average):
+                price = snapshot.outcome_odds.get(selection, 0.0)
+                if price <= 1.0 or _is_price_outlier(price, average):
+                    continue
             edge = (price / average) - 1.0
             candidate = MarketEdge(
                 market_type=snapshot.market_type.value,
@@ -41,10 +46,18 @@ def _best_market_edge(odds_snapshots: list[OddsSnapshot]) -> MarketEdge | None:
                 source=snapshot.source,
                 bookmaker=snapshot.bookmaker,
                 movement=snapshot.movement,
+                line=snapshot.line,
             )
             if best is None or candidate.edge > best.edge:
                 best = candidate
     return best
+
+
+def _is_price_outlier(price: float, average: float) -> bool:
+    if average <= 1.0 or price <= 1.0:
+        return True
+    ratio = price / average
+    return ratio >= 1.75 or ratio <= 0.45
 
 
 def _strategy_profile_for_edge(
@@ -52,6 +65,19 @@ def _strategy_profile_for_edge(
     edge: MarketEdge,
     settings: Settings,
 ) -> StrategyProfileSettings | None:
+    if _is_world_cup_live_league(_league_settings_for_match(match, settings)):
+        selection = _normalized_strategy_selection(edge.selection, edge.market_type)
+        for profile in sorted(settings.strategy_profiles, key=lambda item: (not item.live_enabled, item.id)):
+            if not profile.active:
+                continue
+            if profile.id != "world_cup_high_winrate":
+                continue
+            if profile.league_code.upper() != "WORLD_CUP":
+                continue
+            if profile.market_type != edge.market_type:
+                continue
+            if selection in {_normalized_strategy_selection(item, profile.market_type) for item in profile.selections}:
+                return profile
     league_code = _football_data_uk_code(match, settings)
     if not league_code:
         return None
@@ -166,6 +192,215 @@ def _bookmaker_count(odds_snapshots: list[OddsSnapshot]) -> int:
             snapshot.bookmaker.strip()
             for snapshot in odds_snapshots
             if snapshot.bookmaker and snapshot.bookmaker.strip().lower() != "market average"
+        }
+    )
+
+
+def _research_advisory_signal(match: Match, findings: list[AgentFinding]) -> dict | None:
+    candidates: list[dict] = []
+    for finding in findings:
+        payload = finding.payload or {}
+        if not bool(payload.get("advisory_recommendation")):
+            continue
+        market_type = str(payload.get("market_type") or "1x2")
+        if market_type != "1x2":
+            continue
+        selection = _normalize_research_selection(payload.get("selection"), match)
+        if not selection:
+            continue
+        evidence_count = len(finding.evidence_sources)
+        if evidence_count < 2 or finding.confidence < 0.58:
+            continue
+        candidates.append(
+            {
+                "selection": selection,
+                "confidence": finding.confidence,
+                "score_delta": finding.score_delta,
+                "evidence_count": evidence_count,
+                "summary": finding.summary,
+                "finding_id": finding.id,
+                "agent_name": finding.agent_name,
+            }
+        )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item["confidence"], item["evidence_count"], item["score_delta"]), reverse=True)
+    return candidates[0]
+
+
+def _normalize_research_selection(value: object, match: Match) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    normalized = raw.upper()
+    if normalized in {"HOME", "AWAY", "DRAW"}:
+        return normalized
+    if raw.casefold() == match.home_team.casefold():
+        return "HOME"
+    if raw.casefold() == match.away_team.casefold():
+        return "AWAY"
+    return None
+
+
+def _selection_market_edge(odds_snapshots: list[OddsSnapshot], selection: str) -> MarketEdge | None:
+    valid: list[tuple[float, OddsSnapshot]] = []
+    for snapshot in odds_snapshots:
+        if snapshot.market_type.value != "1x2":
+            continue
+        price = snapshot.outcome_odds.get(selection)
+        average = snapshot.market_average.get(selection)
+        if price is None or average is None or price <= 1.0 or average <= 1.0:
+            continue
+        if _is_price_outlier(price, average):
+            continue
+        valid.append((price, snapshot))
+    if not valid:
+        return None
+    best_price, best_snapshot = max(valid, key=lambda item: item[0])
+    market_average = sum(price for price, _ in valid) / len(valid)
+    edge = max(0.0, (best_price / market_average) - 1.0)
+    return MarketEdge(
+        market_type="1x2",
+        selection=selection,
+        best_price=round(best_price, 4),
+        market_average=round(market_average, 4),
+        edge=round(edge, 4),
+        source=best_snapshot.source,
+        bookmaker=best_snapshot.bookmaker,
+        movement=best_snapshot.movement,
+    )
+
+
+def _is_world_cup_advisory_league(league: LeagueSettings | None) -> bool:
+    if league is None:
+        return False
+    return league.code.upper() == "WORLD_CUP"
+
+
+def _is_world_cup_live_league(league: LeagueSettings | None) -> bool:
+    if league is None:
+        return False
+    return league.code.upper() == "WORLD_CUP" and league.strategy_mode == "live" and not league.paper_only
+
+
+def _is_coverage_advisory_league(league: LeagueSettings | None) -> bool:
+    if league is None:
+        return False
+    return league.paper_only and league.tier in {"elite_club", "major_tournament"}
+
+
+def _apply_research_advisory(
+    recommendation: Recommendation,
+    match: Match,
+    odds_snapshots: list[OddsSnapshot],
+    findings: list[AgentFinding],
+    league_settings: LeagueSettings | None,
+    bookmaker_count: int,
+) -> Recommendation:
+    signal = _research_advisory_signal(match, findings)
+    if signal is None or not _is_world_cup_advisory_league(league_settings):
+        return recommendation
+    if bookmaker_count < max(2, league_settings.min_bookmakers if league_settings else 2):
+        return recommendation
+    edge = _selection_market_edge(odds_snapshots, signal["selection"])
+    if edge is None:
+        return recommendation
+
+    evidence_count = int(signal["evidence_count"])
+    confidence = _clamp(max(recommendation.confidence, float(signal["confidence"])), 0.05, 0.93)
+    value_score = _clamp(max(recommendation.value_score, 62.0 + confidence * 22.0 + min(8.0, evidence_count * 1.5)), 0.0, 100.0)
+    risk_score = _clamp(max(18.0, min(recommendation.risk_score, 34.0)), 0.0, 100.0)
+    score_breakdown = dict(recommendation.score_breakdown)
+    score_breakdown["research_advisory"] = {
+        "matched": True,
+        "finding_id": signal["finding_id"],
+        "agent_name": signal["agent_name"],
+        "selection": signal["selection"],
+        "confidence": round(confidence, 3),
+        "evidence_count": evidence_count,
+        "summary": signal["summary"],
+    }
+    score_breakdown["strategy_confidence_class"] = "research_advisory"
+    odds_basis = dict(recommendation.odds_basis)
+    odds_basis.update(
+        {
+            "best_price": edge.best_price,
+            "market_average": edge.market_average,
+            "edge": edge.edge,
+            "source": edge.source,
+            "bookmaker": edge.bookmaker,
+            "movement": edge.movement,
+            "research_advisory": score_breakdown["research_advisory"],
+            "strategy_confidence_class": "research_advisory",
+        }
+    )
+    risk_tags = sorted(set(recommendation.risk_tags + ["advisory_no_real_stake", "world_cup_research_advisory"]))
+    selection_label = match.home_team if signal["selection"] == "HOME" else match.away_team if signal["selection"] == "AWAY" else "Draw"
+    reason = (
+        f"研究增强建议：外部证据 {evidence_count} 条支持 {selection_label}，"
+        f"健康赔率最高价 {edge.best_price:.2f}，市场均价 {edge.market_average:.2f}，"
+        f"建议置信度 {confidence:.2f}。世界杯策略仍为非下单建议，仓位置为 0。"
+    )
+    return recommendation.model_copy(
+        update={
+            "id": f"{match.id}-research-{edge.market_type}-{edge.selection}-v1",
+            "market_type": MarketType(edge.market_type),
+            "selection": edge.selection,
+            "status": RecommendationStatus.advisory_recommended,
+            "value_score": round(value_score, 2),
+            "risk_score": round(risk_score, 2),
+            "confidence": round(confidence, 3),
+            "stake_units": 0.0,
+            "odds_basis": odds_basis,
+            "score_breakdown": score_breakdown,
+            "risk_tags": risk_tags,
+            "reason": reason,
+        }
+    )
+
+
+def _apply_coverage_advisory(
+    recommendation: Recommendation,
+    match: Match,
+    league_settings: LeagueSettings | None,
+    bookmaker_count: int,
+) -> Recommendation:
+    if recommendation.status is not RecommendationStatus.paper_candidate:
+        return recommendation
+    if not _is_coverage_advisory_league(league_settings):
+        return recommendation
+    if recommendation.market_type is None or not recommendation.selection:
+        return recommendation
+    if bookmaker_count < max(2, league_settings.min_bookmakers if league_settings else 2):
+        return recommendation
+    tier_policy = recommendation.score_breakdown.get("tier_policy") or recommendation.odds_basis.get("tier_policy")
+    if not isinstance(tier_policy, dict) or tier_policy.get("passed") is not True:
+        return recommendation
+
+    score_breakdown = dict(recommendation.score_breakdown)
+    score_breakdown["coverage_advisory"] = {
+        "matched": True,
+        "tier": league_settings.tier if league_settings else None,
+        "league_code": league_settings.code if league_settings else None,
+        "reason": "paper_only_high_coverage_league",
+    }
+    score_breakdown["strategy_confidence_class"] = "coverage_advisory"
+    odds_basis = dict(recommendation.odds_basis)
+    odds_basis["coverage_advisory"] = score_breakdown["coverage_advisory"]
+    odds_basis["strategy_confidence_class"] = "coverage_advisory"
+    risk_tags = sorted(set(recommendation.risk_tags + ["advisory_no_real_stake", "coverage_advisory"]))
+    reason = (
+        recommendation.reason
+        + " 大联赛/大赛覆盖建议已通过分层数据与赔率门槛，但当前联赛仍为纸面模式，仓位置为 0。"
+    )
+    return recommendation.model_copy(
+        update={
+            "status": RecommendationStatus.advisory_recommended,
+            "stake_units": 0.0,
+            "score_breakdown": score_breakdown,
+            "odds_basis": odds_basis,
+            "risk_tags": risk_tags,
+            "reason": reason,
         }
     )
 
@@ -382,10 +617,10 @@ def score_match(
         reason += " 未命中已验证回测策略池，仅按实时评分输出。"
     if status is RecommendationStatus.paper_candidate:
         reason += " 当前联赛或策略处于纸面观察模式，仓位置为 0，不进入今日主推。"
-    elif strategy_confidence_class == "secondary_live_small_stake":
-        reason += f" 命中二级职业联赛小仓实盘门槛，最高仓位 {stake_units:.1f}u。"
+    elif strategy_confidence_class in {"elite_live_small_stake", "secondary_live_small_stake", "tournament_live_small_stake"}:
+        reason += f" 命中分层小仓实盘门槛，最高仓位 {stake_units:.1f}u。"
 
-    return Recommendation(
+    recommendation = Recommendation(
         id=f"{match.id}-{edge.market_type}-{edge.selection}-v1",
         match_id=match.id,
         market_type=edge.market_type,
@@ -402,6 +637,7 @@ def score_match(
             "source": edge.source,
             "bookmaker": edge.bookmaker,
             "movement": edge.movement,
+            "line": edge.line,
             "league_profile": league_profile_payload,
             "tier_policy": _tier_policy_payload(tier_policy, bookmaker_count, tier_policy_gates_failed),
             "strategy_profile": strategy_profile_payload,
@@ -411,4 +647,18 @@ def score_match(
         risk_tags=sorted(set(risk_tags + gates_failed)),
         reason=reason,
         risk_notice=settings.app.risk_notice,
+    )
+    recommendation = _apply_coverage_advisory(
+        recommendation,
+        match=match,
+        league_settings=league_settings,
+        bookmaker_count=bookmaker_count,
+    )
+    return _apply_research_advisory(
+        recommendation,
+        match=match,
+        odds_snapshots=odds_snapshots,
+        findings=findings,
+        league_settings=league_settings,
+        bookmaker_count=bookmaker_count,
     )

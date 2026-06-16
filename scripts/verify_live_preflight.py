@@ -29,6 +29,18 @@ def main() -> None:
             from football_analysis.live_preflight import run_live_preflight
 
             _insert_live_candidate(repository, "preflight-live-pass")
+            default_scope = run_live_preflight(
+                repository,
+                settings,
+                checked_at=datetime(2027, 1, 17, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            )
+            assert default_scope.status == "no_matches", "default preflight must treat already-started matches as out of scope"
+            assert default_scope.ready_to_bet is False, "past kickoff matches must never be approved for betting"
+            assert default_scope.action == "wait_for_fixtures", "past kickoff matches should require future fixtures"
+            assert default_scope.live_audit.status == "no_matches", "live audit scope must exclude past kickoff matches"
+            assert default_scope.live_audit.recommended_count == 0, "excluded past matches must not produce recommendations"
+            assert default_scope.odds_readiness.scoped_matches == 0, "odds readiness must exclude past kickoff matches"
+
             report = run_live_preflight(repository, settings, include_past=True)
             assert report.status == "ready", "qualified live candidate should make preflight ready"
             assert report.ready_to_bet is True, "ready preflight must explicitly approve betting"
@@ -77,8 +89,8 @@ def main() -> None:
             _insert_secondary_live_candidate(repository, "preflight-secondary-live-pass")
             secondary_ready = run_live_preflight(repository, settings, include_past=True)
             assert secondary_ready.live_audit.status == "ready", "secondary live candidate must pass live audit"
-            assert secondary_ready.odds_readiness.status == "insufficient", (
-                "active profile odds may still be insufficient while a small-stake live candidate is approved"
+            assert secondary_ready.odds_readiness.active_profiles >= 1, (
+                "preflight must still report active profile odds readiness while a small-stake live candidate is approved"
             )
             assert secondary_ready.status == "ready", (
                 "approved live-gate candidates must not be blocked by unrelated active-profile odds gaps"
@@ -86,6 +98,34 @@ def main() -> None:
             assert secondary_ready.ready_to_bet is True
             assert secondary_ready.action == "place_approved_live_bets"
             assert not secondary_ready.issues, "ready preflight should not expose unrelated profile gaps as blockers"
+        finally:
+            repository.close()
+
+    with TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "verify-scoped-profileless.db"
+        settings = load_settings()
+        settings.app.fixture_mode = False
+        settings.storage.database_url = f"sqlite:///{db_path}"
+        repository = StructuredRepository(settings.storage.database_url)
+        repository.initialize()
+        try:
+            from football_analysis.live_preflight import run_live_preflight
+
+            _insert_australia_profileless_candidate(repository, "preflight-aus-profileless-pass")
+            scoped = run_live_preflight(
+                repository,
+                settings,
+                include_past=True,
+                league_codes={"AUS_ACT_NPL"},
+                require_strategy_profiles=False,
+            )
+            assert scoped.odds_readiness.active_profiles == 0
+            assert scoped.odds_readiness.scoped_matches == 1
+            assert scoped.live_audit.total_matches == 1
+            assert scoped.status == "ready"
+            assert scoped.ready_to_bet is True
+            assert scoped.action == "place_approved_live_bets"
+            assert not scoped.issues
         finally:
             repository.close()
 
@@ -274,6 +314,52 @@ def _insert_secondary_live_candidate(repository: StructuredRepository, match_id:
             summary="Secondary league tier policy and matchup context agree with home value.",
             confidence=0.78,
             score_delta=9.0,
+        ),
+    )
+
+
+def _insert_australia_profileless_candidate(repository: StructuredRepository, match_id: str) -> None:
+    kickoff = datetime(2026, 7, 22, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    repository.upsert_model(
+        "matches",
+        match_id,
+        Match(
+            id=match_id,
+            league="澳首超",
+            home_team=f"{match_id} Home",
+            away_team=f"{match_id} Away",
+            kickoff_at=kickoff,
+            data_completeness=0.92,
+        ),
+    )
+    for index, bookmaker in enumerate(["Bet365", "Pinnacle"]):
+        repository.upsert_model(
+            "odds",
+            f"{match_id}-odds-{index}",
+            OddsSnapshot(
+                id=f"{match_id}-odds-{index}",
+                match_id=match_id,
+                market_type="asian_handicap",
+                line="0.5/1",
+                source="qqsd",
+                bookmaker=bookmaker,
+                outcome_odds={"HOME": 2.12},
+                market_average={"HOME": 1.94},
+                best_price={"HOME": 2.12},
+                movement=0.018,
+                collected_at=datetime.now(timezone.utc),
+            ),
+        )
+    repository.upsert_model(
+        "findings",
+        f"{match_id}-qqsd-context",
+        AgentFinding(
+            id=f"{match_id}-qqsd-context",
+            match_id=match_id,
+            agent_name="qqsd_full_context",
+            summary="QQSD context supports a small-stake Australia live candidate.",
+            confidence=0.78,
+            score_delta=11.0,
         ),
     )
 

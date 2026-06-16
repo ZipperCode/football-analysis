@@ -2,29 +2,93 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: football_analysis
-      POSTGRES_USER: football
-      POSTGRES_PASSWORD: football
+      POSTGRES_DB: ${POSTGRES_DB:-football_analysis}
+      POSTGRES_USER: ${POSTGRES_USER:-football}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-football}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U football -d football_analysis"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-football} -d ${POSTGRES_DB:-football_analysis}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   api:
-    build: .
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://football:football@postgres:5432/football_analysis
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-football}:${POSTGRES_PASSWORD:-football}@postgres:5432/${POSTGRES_DB:-football_analysis}
       FOOTBALL_CONFIG: config/default.yaml
+      FOOTBALL_ADMIN_TOKEN: ${FOOTBALL_ADMIN_TOKEN:-}
+      PYTHONUNBUFFERED: "1"
     ports:
-      - "8000:8000"
+      - "${API_BIND_HOST:-127.0.0.1}:${API_PORT:-18000}:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-football}:${POSTGRES_PASSWORD:-football}@postgres:5432/${POSTGRES_DB:-football_analysis}
+      FOOTBALL_CONFIG: config/default.yaml
+      PYTHONUNBUFFERED: "1"
+      WORKER_JSON: ${WORKER_JSON:-0}
+      WORKER_COMPACT_JSON: ${WORKER_COMPACT_JSON:-1}
+      WORKER_ALERT_TEXT: ${WORKER_ALERT_TEXT:-0}
+      WORKER_NOTIFY_TELEGRAM: ${WORKER_NOTIFY_TELEGRAM:-1}
+      WORKER_ONCE: ${WORKER_ONCE:-0}
+      WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-3600}
+      WORKER_AUTO_REFRESH: ${WORKER_AUTO_REFRESH:-1}
+      WORKER_INCLUDE_RESULTS: ${WORKER_INCLUDE_RESULTS:-0}
+      WORKER_INCLUDE_DAILY_OPS: ${WORKER_INCLUDE_DAILY_OPS:-1}
+      WORKER_EXPAND_LIVE_LEAGUES_ON_EMPTY: ${WORKER_EXPAND_LIVE_LEAGUES_ON_EMPTY:-1}
+      WORKER_REFRESH_SCOPE: ${WORKER_REFRESH_SCOPE:-active-profiles}
+      WORKER_EXECUTION_MODE: ${WORKER_EXECUTION_MODE:-dry-run}
+      WORKER_EXECUTION_PLATFORM: ${WORKER_EXECUTION_PLATFORM:-real}
+      WORKER_DATA_APPLY_MODE: ${WORKER_DATA_APPLY_MODE:-safe}
+      WORKER_DATA_APPLY_INCLUDE_BACKTESTS: ${WORKER_DATA_APPLY_INCLUDE_BACKTESTS:-0}
+      WORKER_DATA_APPLY_MAX_COMMANDS: ${WORKER_DATA_APPLY_MAX_COMMANDS:-3}
+      WORKER_BROKER_DISCOVERY_MODE: ${WORKER_BROKER_DISCOVERY_MODE:-off}
+      WORKER_BROKER_EXECUTION_MODE: ${WORKER_BROKER_EXECUTION_MODE:-off}
+      WORKER_REQUIRE_DEPLOY_READY: ${WORKER_REQUIRE_DEPLOY_READY:-1}
+      PRODUCTION_DEPLOY_TARGET: ${PRODUCTION_DEPLOY_TARGET:-worker}
+    command:
+      - footballctl
+      - production-worker-env
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - footballctl production-deploy-check --target ${PRODUCTION_DEPLOY_TARGET:-worker} --fail-on-blocked --json >/dev/null 2>&1
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
 
 volumes:
   postgres-data:

@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from football_analysis.db import StructuredRepository
 from football_analysis.live_audit import audit_live_trading
 from football_analysis.models import AgentFinding, BetLog, Match, OddsSnapshot
+from football_analysis.scoring import score_match
 from football_analysis.settings import StrategyProfileSettings, load_settings
 
 
@@ -23,6 +24,15 @@ def main() -> None:
             _insert_live_candidate(repository, "audit-live-pass", bookmaker_count=2)
             _insert_live_candidate(repository, "audit-single-bookmaker", bookmaker_count=1)
 
+            default_scope = audit_live_trading(
+                repository,
+                settings,
+                checked_at=datetime(2027, 1, 17, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            )
+            assert default_scope.status == "no_matches", "default live audit must exclude already-started matches"
+            assert default_scope.total_matches == 0, "past kickoff matches must not stay in live audit scope"
+            assert default_scope.recommended_count == 0, "past kickoff matches must not produce live recommendations"
+
             report = audit_live_trading(repository, settings, include_past=True)
             assert report.status == "ready", "one qualified live candidate should make audit ready"
             assert report.recommended_count == 1, "expected one real-money recommendation"
@@ -30,6 +40,17 @@ def main() -> None:
             assert report.total_live_stake_units == 0.4, "expected 0.4u total live exposure"
             assert report.gate_counts["live_min_bookmakers:1/2"] == 1, "single bookmaker gate must be counted"
             assert report.items[0].live_gate_passed is True, "ready item should be first"
+
+            line_match = repository.get_model("matches", "audit-live-pass", Match)
+            assert line_match is not None
+            line_recommendation = score_match(
+                line_match,
+                [snapshot for snapshot in repository.list_models("odds", OddsSnapshot) if snapshot.match_id == line_match.id],
+                [finding for finding in repository.list_models("findings", AgentFinding) if finding.match_id == line_match.id],
+                settings,
+            )
+            assert line_recommendation.market_type == "asian_handicap"
+            assert line_recommendation.odds_basis["line"] == "+0.5"
 
             for index in range(3):
                 repository.upsert_model(
