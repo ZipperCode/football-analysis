@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from football_analysis.contracts import SourceResponse
 from football_analysis.datasources.base import ClientContext
 from football_analysis.datasources.football_data_uk import parse_csv_text
-from football_analysis.datasources.odds_api_io import OddsApiIoClient, map_events
+from football_analysis.datasources.odds_api_io import OddsApiIoClient, map_events, map_odds
 from football_analysis.db import StructuredRepository
 from football_analysis.service import AnalysisService
 from football_analysis.settings import load_settings
@@ -73,6 +73,55 @@ def main() -> None:
                 assert odds_api_events[0].data_completeness >= 0.75, (
                     "Odds-API event fixtures with stable league/team/kickoff fields must clear secondary live tier data quality"
                 )
+                world_cup_event = map_events(
+                    [
+                        {
+                            "id": "66457050",
+                            "home": "Panama",
+                            "away": "England",
+                            "startsAt": "2026-06-27T18:00:00Z",
+                            "league": "International - FIFA World Cup",
+                        }
+                    ]
+                )[0]
+                assert world_cup_event.data_completeness >= 0.82, (
+                    "structured Odds-API major tournament fixtures must clear live data quality when teams, league, "
+                    "kickoff, and provider event id are all present"
+                )
+                mixed_market_odds = map_odds(
+                    [
+                        {
+                            "id": "66457026",
+                            "bookmakers": {
+                                "1xbet": [
+                                    {"name": "Totals", "odds": [{"hdp": 2.5, "over": "1.45", "under": "2.48"}]},
+                                    {
+                                        "name": "Alternative Corners",
+                                        "odds": [{"hdp": 2.5, "over": "50.0", "under": "1.002"}],
+                                    },
+                                    {
+                                        "name": "Team Total Away",
+                                        "odds": [{"hdp": 2.5, "over": "1.81", "under": "2.01"}],
+                                    },
+                                    {
+                                        "name": "Alternative Asian Handicap",
+                                        "odds": [{"hdp": -3.25, "home": "6.8", "away": "1.105"}],
+                                    },
+                                ],
+                                "Bet365": [
+                                    {"name": "Goals Over/Under", "odds": [{"hdp": 2.5, "over": "1.50", "under": "2.625"}]},
+                                    {"name": "Spread", "odds": [{"hdp": 0.25, "home": "1.70", "away": "2.20"}]},
+                                ],
+                            },
+                        }
+                    ]
+                )
+                assert len(mixed_market_odds) == 3, "Odds-API should keep only core full-time 1X2/AH/totals markets"
+                assert {item.id for item in mixed_market_odds} == {
+                    "odds_api_io:66457026:1xbet:over_under:2.5",
+                    "odds_api_io:66457026:Bet365:over_under:2.5",
+                    "odds_api_io:66457026:Bet365:asian_handicap:0.25",
+                }
 
                 os.environ["ODDS_API_IO_KEY"] = "test-key"
                 settings.data_sources["odds_api_io"].bookmakers = ["Bet365", "Pinnacle", "Unibet"]

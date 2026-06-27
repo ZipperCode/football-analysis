@@ -1,229 +1,35 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from football_analysis.contracts import ScoreBreakdown
 from football_analysis.models import AgentFinding, Match, OddsSnapshot, Recommendation, RecommendationStatus
-from football_analysis.settings import LeagueSettings, Settings, StrategyProfileSettings, TierPolicySettings
+from football_analysis.settings import Settings
+from football_analysis.scoring_helpers import (
+    best_market_edge,
+    bookmaker_count,
+    clamp_score,
+    league_profile_payload,
+    league_settings_for_match,
+    normalized_strategy_selection,
+    strategy_confidence_class,
+    strategy_profile_for_edge,
+    strategy_profile_payload,
+    tier_policy_for_league,
+    tier_policy_gates_failed,
+    tier_policy_payload,
+)
 
-
-@dataclass(frozen=True)
-class MarketEdge:
-    market_type: str
-    selection: str
-    best_price: float
-    market_average: float
-    edge: float
-    source: str
-    bookmaker: str
-    movement: float
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-def _best_market_edge(odds_snapshots: list[OddsSnapshot]) -> MarketEdge | None:
-    best: MarketEdge | None = None
-    for snapshot in odds_snapshots:
-        prices = snapshot.best_price or snapshot.outcome_odds
-        for selection, price in prices.items():
-            average = snapshot.market_average.get(selection)
-            if not average or average <= 1.0 or price <= 1.0:
-                continue
-            edge = (price / average) - 1.0
-            candidate = MarketEdge(
-                market_type=snapshot.market_type.value,
-                selection=selection,
-                best_price=price,
-                market_average=average,
-                edge=edge,
-                source=snapshot.source,
-                bookmaker=snapshot.bookmaker,
-                movement=snapshot.movement,
-            )
-            if best is None or candidate.edge > best.edge:
-                best = candidate
-    return best
-
-
-def _strategy_profile_for_edge(
-    match: Match,
-    edge: MarketEdge,
-    settings: Settings,
-) -> StrategyProfileSettings | None:
-    league_code = _football_data_uk_code(match, settings)
-    if not league_code:
-        return None
-    selection = _normalized_strategy_selection(edge.selection, edge.market_type)
-    profiles = sorted(settings.strategy_profiles, key=lambda item: (not item.live_enabled, item.id))
-    for profile in profiles:
-        if not profile.active:
-            continue
-        if profile.league_code.upper() != league_code:
-            continue
-        if profile.market_type != edge.market_type:
-            continue
-        if selection in {_normalized_strategy_selection(item, profile.market_type) for item in profile.selections}:
-            return profile
-    return None
-
-
-def _league_settings_for_match(match: Match, settings: Settings) -> LeagueSettings | None:
-    """Return configured league metadata for a match, including provider aliases."""
-    normalized_league = match.league.strip().lower()
-    for league in settings.leagues:
-        if normalized_league in {value.strip().lower() for value in _league_match_values(league) if value}:
-            return league
-    return None
-
-
-def _league_match_values(league: LeagueSettings) -> list[str]:
-    """Build every stable league label used by providers and historical datasets."""
-    values = [league.code, league.name, league.football_data_uk_code, league.football_data_org_code]
-    if league.country and league.name:
-        values.append(f"{league.country} - {league.name}")
-    values.extend(league.aliases)
-    return [value for value in values if value]
-
-
-def _football_data_uk_code(match: Match, settings: Settings) -> str | None:
-    league = _league_settings_for_match(match, settings)
-    if not league:
-        return None
-    return (league.football_data_uk_code or league.code).upper()
-
-
-def _normalized_strategy_selection(selection: str, market_type: str | None = None) -> str:
-    upper = selection.upper()
-    market = (market_type or "").lower()
-    if upper.startswith("AH_AWAY") or (market == "asian_handicap" and _is_away_selection(upper)):
-        return "AH_AWAY"
-    if upper.startswith("AH_HOME") or (market == "asian_handicap" and _is_home_selection(upper)):
-        return "AH_HOME"
-    return upper
-
-
-def _is_away_selection(selection: str) -> bool:
-    return selection == "AWAY" or selection.startswith("AWAY_") or selection.startswith("AWAY:")
-
-
-def _is_home_selection(selection: str) -> bool:
-    return selection == "HOME" or selection.startswith("HOME_") or selection.startswith("HOME:")
-
-
-def _strategy_profile_payload(profile: StrategyProfileSettings | None) -> dict:
-    if profile is None:
-        return {"matched": False}
-    return {
-        "matched": True,
-        "id": profile.id,
-        "name": profile.name,
-        "league_code": profile.league_code,
-        "season_phases": profile.season_phases,
-        "stability_label": profile.stability_label,
-        "roi": profile.roi,
-        "settled_bets": profile.settled_bets,
-        "positive_folds": profile.positive_folds,
-        "fold_count": profile.fold_count,
-        "average_clv": profile.average_clv,
-        "live_enabled": profile.live_enabled,
-        "long_horizon_roi": profile.long_horizon_roi,
-        "long_horizon_settled_bets": profile.long_horizon_settled_bets,
-        "holdout_roi": profile.holdout_roi,
-        "holdout_settled_bets": profile.holdout_settled_bets,
-    }
-
-
-def _league_profile_payload(league: LeagueSettings | None) -> dict:
-    """Expose the league tier that decided scoring confidence and staking mode."""
-    if league is None:
-        return {"matched": False}
-    return {
-        "matched": True,
-        "code": league.code,
-        "name": league.name,
-        "country": league.country,
-        "tier": league.tier,
-        "analysis_depth": league.analysis_depth,
-        "strategy_mode": league.strategy_mode,
-        "paper_only": league.paper_only,
-        "min_bookmakers": league.min_bookmakers,
-        "max_events": league.max_events,
-    }
-
-
-def _tier_policy_for_league(league: LeagueSettings | None, settings: Settings) -> TierPolicySettings | None:
-    if league is None:
-        return None
-    return settings.tier_policies.get(league.tier)
-
-
-def _bookmaker_count(odds_snapshots: list[OddsSnapshot]) -> int:
-    """Count real bookmakers; synthetic market-average rows are not enough for live staking."""
-    return len(
-        {
-            snapshot.bookmaker.strip()
-            for snapshot in odds_snapshots
-            if snapshot.bookmaker and snapshot.bookmaker.strip().lower() != "market average"
-        }
-    )
-
-
-def _tier_policy_gates_failed(
-    policy: TierPolicySettings,
-    match: Match,
-    value_score: float,
-    risk_score: float,
-    confidence: float,
-    bookmaker_count: int,
-) -> list[str]:
-    gates_failed: list[str] = []
-    if policy.min_data_quality is not None and match.data_completeness < policy.min_data_quality:
-        gates_failed.append(f"tier_min_data_quality:{match.data_completeness:.2f}/{policy.min_data_quality:.2f}")
-    if policy.min_value_score is not None and value_score < policy.min_value_score:
-        gates_failed.append(f"tier_min_value_score:{value_score:.2f}/{policy.min_value_score:.2f}")
-    if policy.max_risk_score is not None and risk_score > policy.max_risk_score:
-        gates_failed.append(f"tier_max_risk_score:{risk_score:.2f}/{policy.max_risk_score:.2f}")
-    if policy.min_confidence is not None and confidence < policy.min_confidence:
-        gates_failed.append(f"tier_min_confidence:{confidence:.3f}/{policy.min_confidence:.3f}")
-    if policy.min_bookmakers is not None and bookmaker_count < policy.min_bookmakers:
-        gates_failed.append(f"tier_min_bookmakers:{bookmaker_count}/{policy.min_bookmakers}")
-    return gates_failed
-
-
-def _tier_policy_payload(
-    policy: TierPolicySettings | None,
-    bookmaker_count: int,
-    gates_failed: list[str],
-) -> dict:
-    if policy is None:
-        return {"matched": False, "bookmaker_count": bookmaker_count}
-    return {
-        "matched": True,
-        "label": policy.label,
-        "min_data_quality": policy.min_data_quality,
-        "min_value_score": policy.min_value_score,
-        "max_risk_score": policy.max_risk_score,
-        "min_confidence": policy.min_confidence,
-        "max_stake_units": policy.max_stake_units,
-        "min_bookmakers": policy.min_bookmakers,
-        "bookmaker_count": bookmaker_count,
-        "passed": not gates_failed,
-        "gates_failed": gates_failed,
-    }
-
-
-def _strategy_confidence_class(
-    league: LeagueSettings | None,
-    strategy_profile: StrategyProfileSettings | None,
-) -> str:
-    """Classify whether a score can become a live pick or must remain paper-only."""
-    if strategy_profile is not None:
-        return "validated_strategy"
-    if league is None or league.paper_only or league.strategy_mode != "live":
-        return "paper_candidate"
-    return "live_scoring"
+_best_market_edge = best_market_edge
+_clamp = clamp_score
+_normalized_strategy_selection = normalized_strategy_selection
+_league_settings_for_match = league_settings_for_match
+_league_profile_payload = league_profile_payload
+_strategy_confidence_class = strategy_confidence_class
+_strategy_profile_for_edge = strategy_profile_for_edge
+_strategy_profile_payload = strategy_profile_payload
+_bookmaker_count = bookmaker_count
+_tier_policy_for_league = tier_policy_for_league
+_tier_policy_gates_failed = tier_policy_gates_failed
+_tier_policy_payload = tier_policy_payload
 
 
 def score_match(
@@ -236,7 +42,11 @@ def score_match(
     league_profile_payload = _league_profile_payload(league_settings)
     bookmaker_count = _bookmaker_count(odds_snapshots)
     tier_policy = _tier_policy_for_league(league_settings, settings)
-    edge = _best_market_edge(odds_snapshots)
+    edge = _best_market_edge(
+        odds_snapshots,
+        min_odds=settings.live_trading.min_recommendation_odds,
+        max_odds=settings.live_trading.max_recommendation_odds,
+    )
     risk_tags = [tag for finding in findings for tag in finding.risk_tags]
     weighted_signal = sum(finding.score_delta * finding.confidence for finding in findings)
     average_finding_confidence = (

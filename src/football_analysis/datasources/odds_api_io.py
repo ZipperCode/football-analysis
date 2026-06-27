@@ -1,10 +1,37 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from football_analysis.datasources.base import ClientContext, DataSourceError
 from football_analysis.models import Match, MarketType, OddsSnapshot
+
+_BASE_FIXTURE_COMPLETENESS: Final = 0.75
+_STRUCTURED_FIXTURE_COMPLETENESS: Final = 0.78
+_MAJOR_TOURNAMENT_FIXTURE_COMPLETENESS: Final = 0.82
+_MAJOR_TOURNAMENT_MARKERS: Final = ("world cup", "fifa", "euro", "copa america", "champions league")
+_EXCLUDED_MARKET_MARKERS: Final = (
+    "alternative",
+    "booking",
+    "corner",
+    "correct score",
+    "draw no bet",
+    "double chance",
+    "first ",
+    "goalscorer",
+    "handicap ht",
+    "half",
+    "ht",
+    "method of victory",
+    "offside",
+    "player",
+    "race",
+    "save",
+    "shot",
+    "special",
+    "tackle",
+    "team",
+)
 
 
 class OddsApiIoClient:
@@ -83,11 +110,29 @@ def map_events(payload: Any) -> list[Match]:
                 home_team=str(home),
                 away_team=str(away),
                 kickoff_at=_parse_datetime(str(starts)),
-                data_completeness=0.75,
+                data_completeness=_fixture_completeness(str(league), str(home), str(away)),
                 external_ids={"odds_api_io_event": event_id},
             )
         )
     return matches
+
+
+def _fixture_completeness(league: str, home_team: str, away_team: str) -> float:
+    if not _has_named_team(home_team) or not _has_named_team(away_team) or league.strip().lower() == "unknown":
+        return _BASE_FIXTURE_COMPLETENESS
+    if _is_major_tournament_league(league):
+        return _MAJOR_TOURNAMENT_FIXTURE_COMPLETENESS
+    return _STRUCTURED_FIXTURE_COMPLETENESS
+
+
+def _has_named_team(value: str) -> bool:
+    normalized = value.strip().lower()
+    return bool(normalized) and normalized not in {"unknown home", "unknown away", "unknown"}
+
+
+def _is_major_tournament_league(value: str) -> bool:
+    normalized = value.strip().lower()
+    return any(marker in normalized for marker in _MAJOR_TOURNAMENT_MARKERS)
 
 
 def _configured_bookmakers(bookmakers: list[str]) -> str:
@@ -141,13 +186,19 @@ def map_odds(payload: Any) -> list[OddsSnapshot]:
 
 def _market_type(value: str) -> MarketType | None:
     lowered = value.lower()
-    if lowered in {"h2h", "1x2", "ml", "moneyline"} or "match" in lowered:
+    if _excluded_market(lowered):
+        return None
+    if lowered in {"h2h", "1x2", "ml", "moneyline"}:
         return MarketType.one_x_two
-    if "spread" in lowered or "handicap" in lowered:
+    if lowered == "spread":
         return MarketType.asian_handicap
-    if "total" in lowered or "over" in lowered:
+    if lowered in {"totals", "goals over/under"}:
         return MarketType.over_under
     return None
+
+
+def _excluded_market(lowered: str) -> bool:
+    return any(marker in lowered for marker in _EXCLUDED_MARKET_MARKERS)
 
 
 def _payload_rows(payload: Any) -> list[Any]:

@@ -4,6 +4,7 @@ from fastapi import Depends, FastAPI, HTTPException
 
 from football_analysis.backtest import run_historical_backtest
 from football_analysis.daily_ops import DailyOpsReport, run_daily_ops
+from football_analysis.execution_queue import ExecutionQueueReport, build_execution_queue
 from football_analysis.live_audit import LiveAuditReport, audit_live_trading
 from football_analysis.live_decision import LiveDecisionReport, run_live_decision
 from football_analysis.live_preflight import LivePreflightReport, run_live_preflight
@@ -20,6 +21,7 @@ from football_analysis.models import (
     PickList,
     SourceHealth,
 )
+from football_analysis.production import ProductionStatusReport, build_production_status
 from football_analysis.service import AnalysisService, get_api_service
 
 app = FastAPI(
@@ -106,6 +108,24 @@ def live_refresh(
         dry_run=dry_run,
         allow_odds_fallback=allow_odds_fallback,
     )
+
+
+@app.get("/production/status", response_model=ProductionStatusReport)
+def production_status(
+    recent_limit: int = 10,
+    include_past: bool = False,
+    service: AnalysisService = Depends(get_api_service),
+) -> ProductionStatusReport:
+    return build_production_status(service, recent_limit=recent_limit, include_past=include_past)
+
+
+@app.get("/production/queue", response_model=ExecutionQueueReport)
+def production_queue(
+    include_past: bool = False,
+    limit: int = 20,
+    service: AnalysisService = Depends(get_api_service),
+) -> ExecutionQueueReport:
+    return build_execution_queue(service, include_past=include_past, limit=limit)
 
 
 @app.post("/ops/daily", response_model=DailyOpsReport)

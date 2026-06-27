@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from football_analysis.models import BetLog
+from football_analysis.production_cli import register_production_commands
 from football_analysis.service import get_service
 
 app = typer.Typer(help="Football value analysis command line bridge.")
@@ -26,6 +27,9 @@ def _print_json(payload: Any) -> None:
     if hasattr(payload, "model_dump"):
         payload = payload.model_dump(mode="json")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+register_production_commands(app, get_service, _print_json, console)
 
 
 @picks_app.command("today")
@@ -455,6 +459,28 @@ def ingest_standings(
     as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
 ) -> None:
     result = get_service().ingestion.ingest_standings(league_code=league, season=season, source=source)
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
+@ingest_app.command("intelligence")
+def ingest_intelligence(
+    source: str = typer.Option("dongqiudi", "--source"),
+    match_id: str | None = typer.Option(None, "--match-id", help="Internal match id. Defaults to all matches with source ids."),
+    include_team_feeds: bool = typer.Option(True, "--team-feeds/--no-team-feeds", help="Fetch team news feeds when team ids are known."),
+    article_detail_limit: int = typer.Option(3, "--article-detail-limit", min=0, help="Maximum article details to fetch per team feed."),
+    max_matches: int | None = typer.Option(None, "--max-matches", help="Limit scanned matches."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    result = get_service().ingestion.ingest_intelligence(
+        source=source,
+        match_id=match_id,
+        include_team_feeds=include_team_feeds,
+        article_detail_limit=article_detail_limit,
+        max_matches=max_matches,
+    )
     if as_json:
         _print_json(result)
         return

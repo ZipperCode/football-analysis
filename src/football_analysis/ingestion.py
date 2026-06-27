@@ -7,12 +7,14 @@ from uuid import uuid4
 from football_analysis.contracts import HistoricalMatchRow
 from football_analysis.datasources.api_football import APIFootballClient
 from football_analysis.datasources.base import ClientContext, DataSourceError
+from football_analysis.datasources.dongqiudi import DongqiudiClient
 from football_analysis.datasources.football_data_org import FootballDataOrgClient
 from football_analysis.datasources.football_data_uk import FootballDataUkClient
+from football_analysis.datasources.leisu import LeisuClient
 from football_analysis.datasources.odds_api_io import OddsApiIoClient
 from football_analysis.db import StructuredRepository
 from football_analysis.http_client import ProviderHttpClient
-from football_analysis.models import IngestionResult, JobRun, JobStatus, Match, MatchStatus, OddsSnapshot
+from football_analysis.models import AgentFinding, IngestionResult, JobRun, JobStatus, Match, MatchStatus, OddsSnapshot
 from football_analysis.settings import LeagueSettings, Settings
 
 
@@ -90,6 +92,10 @@ class IngestionService:
                             event_ids.append(event_id)
                     for batch in _chunks(event_ids, 10):
                         snapshots.extend(client.odds_multi(event_ids=batch))
+            elif source == "leisu":
+                client = LeisuClient(self._context(source))
+                for match_id in self._leisu_match_ids(league_code=league_code, max_events=max_events):
+                    snapshots.extend(client.odds(match_id=match_id))
             else:
                 raise DataSourceError(f"unsupported_odds_source:{source}")
 
@@ -126,6 +132,43 @@ class IngestionService:
         except Exception as exc:
             job = self._finish_job(job, JobStatus.failed, {}, error=f"{type(exc).__name__}: {exc}")
             return IngestionResult(job=job, errors=[job.error or "unknown error"])
+
+    def ingest_intelligence(
+        self,
+        source: str = "dongqiudi",
+        match_id: str | None = None,
+        include_team_feeds: bool = True,
+        article_detail_limit: int = 3,
+        max_matches: int | None = None,
+    ) -> IngestionResult:
+        job = self._start_job("ingest_intelligence", source)
+        errors: list[str] = []
+        findings: list[AgentFinding] = []
+        try:
+            if source != "dongqiudi":
+                raise DataSourceError(f"unsupported_intelligence_source:{source}")
+            client = DongqiudiClient(self._context(source))
+            matches = self._intelligence_matches(match_id=match_id, max_matches=max_matches)
+            for match in matches:
+                findings.extend(
+                    client.intelligence_findings(
+                        match,
+                        include_team_feeds=include_team_feeds,
+                        article_detail_limit=article_detail_limit,
+                        errors=errors,
+                    )
+                )
+            for finding in findings:
+                self.repository.upsert_model("findings", finding.id, finding)
+            status = JobStatus.partial if errors and findings else JobStatus.succeeded
+            if errors and not findings:
+                status = JobStatus.failed
+            job = self._finish_job(job, status, {"findings": len(findings), "matches": len(matches)}, error="; ".join(errors) or None)
+            return IngestionResult(job=job, inserted=len(findings), errors=errors)
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+            job = self._finish_job(job, JobStatus.failed, {"findings": len(findings)}, error=errors[-1])
+            return IngestionResult(job=job, inserted=len(findings), errors=errors)
 
     def ingest_historical(
         self,
@@ -185,9 +228,44 @@ class IngestionService:
             for league in self._leagues(league_code):
                 if league.odds_api_slug:
                     matches.extend(client.events(league=league.odds_api_slug))
+        elif source == "leisu":
+            client = LeisuClient(self._context(source))
+            matches.extend(client.fixtures(date=date))
+        elif source == "dongqiudi":
+            client = DongqiudiClient(self._context(source))
+            if league_code:
+                matches.extend(client.fixtures(date=date, league_code=league_code))
+            else:
+                matches.extend(client.fixtures(date=date))
         else:
             raise DataSourceError(f"unsupported_fixture_source:{source}")
         return matches
+
+    def _leisu_match_ids(self, league_code: str | None, max_events: int | None) -> list[str]:
+        league_names = {league.name for league in self._leagues(league_code)} if league_code else None
+        match_ids: list[str] = []
+        for match in self.repository.list_models("matches", Match):
+            if league_names is not None and match.league not in league_names:
+                continue
+            leisu_match_id = match.external_ids.get("leisu_match")
+            if leisu_match_id:
+                match_ids.append(leisu_match_id)
+            if max_events is not None and len(match_ids) >= max_events:
+                break
+        return match_ids
+
+    def _intelligence_matches(self, match_id: str | None, max_matches: int | None) -> list[Match]:
+        if match_id:
+            match = self.repository.get_model("matches", match_id, Match)
+            if match is None:
+                raise DataSourceError(f"unknown_match:{match_id}")
+            return [match]
+        matches = [
+            match
+            for match in self.repository.list_models("matches", Match)
+            if match.external_ids.get("dongqiudi_match")
+        ]
+        return matches[:max_matches] if max_matches is not None else matches
 
     def _start_job(self, job_type: str, source: str | None) -> JobRun:
         job = JobRun(id=str(uuid4()), job_type=job_type, status=JobStatus.started, source=source)
