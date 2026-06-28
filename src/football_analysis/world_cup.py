@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -24,6 +24,14 @@ from football_analysis.settings import Settings
 WORLD_CUP_LEAGUE_CODE = "WORLD_CUP"
 WORLD_CUP_PROFILE_ID = "world_cup_high_winrate"
 WORLD_CUP_RESEARCH_PROVIDERS = ("exa", "firecrawl", "tavily")
+WORLD_CUP_RECOMMENDATION_WINDOW_HOURS = 30
+WORLD_CUP_UTC_SOURCE_PREFIXES = {
+    "api_football",
+    "football_data_org",
+    "odds_api_io",
+    "sportmonks",
+    "the_odds_api",
+}
 ADVISORY_WINDOW_MIN_MINUTES = 360
 ADVISORY_WINDOW_MAX_MINUTES = 720
 FINAL_WINDOW_MIN_MINUTES = 60
@@ -57,52 +65,78 @@ def refresh_world_cup_data(
     match_date: str,
     include_research: bool = True,
     research_provider: str = "auto",
+    include_market_sources: bool = True,
+    force_remote: bool = True,
 ) -> dict[str, Any]:
     """Refresh World Cup fixtures, odds and QQSD context with explicit blockers."""
     issues: list[str] = []
     operations: list[dict[str, Any]] = []
+    previous_cache_enabled = service.settings.cache.enabled
+    if force_remote:
+        service.settings.cache.enabled = False
 
-    if not _credential_present(service.settings, "qqsd"):
-        issues.append("missing_required_env:QQSD_C_CK")
-
-    previous_live_context = service.settings.ingestion.qqsd_live_context_enabled
-    previous_timeline = service.settings.ingestion.qqsd_odds_timeline_enabled
-    service.settings.ingestion.qqsd_live_context_enabled = True
-    service.settings.ingestion.qqsd_odds_timeline_enabled = True
     try:
-        fixture_result = service.ingestion.ingest_fixtures(
-            date=match_date,
-            source="qqsd",
-            league_code=WORLD_CUP_LEAGUE_CODE,
-        )
-        operations.append({"operation": "qqsd_fixtures", "result": fixture_result.model_dump(mode="json")})
-        issues.extend(f"qqsd_fixtures:{error}" for error in fixture_result.errors)
+        if not _credential_present(service.settings, "qqsd"):
+            issues.append("missing_required_env:QQSD_C_CK")
 
-        odds_result = service.ingestion.ingest_odds(
-            date=match_date,
-            source="qqsd",
-            league_code=WORLD_CUP_LEAGUE_CODE,
-        )
-        operations.append({"operation": "qqsd_odds", "result": odds_result.model_dump(mode="json")})
-        issues.extend(f"qqsd_odds:{error}" for error in odds_result.errors)
-
+        previous_live_context = service.settings.ingestion.qqsd_live_context_enabled
+        previous_timeline = service.settings.ingestion.qqsd_odds_timeline_enabled
+        service.settings.ingestion.qqsd_live_context_enabled = True
+        service.settings.ingestion.qqsd_odds_timeline_enabled = True
         try:
-            standings_result = service.ingestion.ingest_standings(
-                league_code=WORLD_CUP_LEAGUE_CODE,
+            fixture_result = service.ingestion.ingest_fixtures(
+                date=match_date,
                 source="qqsd",
+                league_code=WORLD_CUP_LEAGUE_CODE,
             )
-            operations.append({"operation": "qqsd_standings", "result": standings_result.model_dump(mode="json")})
-            issues.extend(f"qqsd_standings:{error}" for error in standings_result.errors)
-        except Exception as exc:
-            issues.append(f"qqsd_standings:{type(exc).__name__}:{exc}")
-    finally:
-        service.settings.ingestion.qqsd_live_context_enabled = previous_live_context
-        service.settings.ingestion.qqsd_odds_timeline_enabled = previous_timeline
+            operations.append({"operation": "qqsd_fixtures", "result": fixture_result.model_dump(mode="json")})
+            issues.extend(f"qqsd_fixtures:{error}" for error in fixture_result.errors)
 
-    if include_research:
-        research_report = research_world_cup(service, hours=48, provider=research_provider)
-        operations.append({"operation": "research", "result": research_report})
-        issues.extend(f"research:{issue}" for issue in research_report.get("issues", []))
+            odds_result = service.ingestion.ingest_odds(
+                date=match_date,
+                source="qqsd",
+                league_code=WORLD_CUP_LEAGUE_CODE,
+            )
+            operations.append({"operation": "qqsd_odds", "result": odds_result.model_dump(mode="json")})
+            issues.extend(f"qqsd_odds:{error}" for error in odds_result.errors)
+
+            try:
+                standings_result = service.ingestion.ingest_standings(
+                    league_code=WORLD_CUP_LEAGUE_CODE,
+                    source="qqsd",
+                )
+                operations.append({"operation": "qqsd_standings", "result": standings_result.model_dump(mode="json")})
+                issues.extend(f"qqsd_standings:{error}" for error in standings_result.errors)
+            except Exception as exc:
+                issues.append(f"qqsd_standings:{type(exc).__name__}:{exc}")
+        finally:
+            service.settings.ingestion.qqsd_live_context_enabled = previous_live_context
+            service.settings.ingestion.qqsd_odds_timeline_enabled = previous_timeline
+
+        if include_market_sources:
+            for source_id in ("odds_api_io", "the_odds_api", "api_football"):
+                source = service.settings.data_sources.get(source_id)
+                if source is None or not source.enabled:
+                    continue
+                if not _credential_present(service.settings, source_id):
+                    issues.append(f"missing_required_env:{source.api_key_env}")
+                    continue
+                odds_result = service.ingestion.ingest_odds(
+                    date=match_date,
+                    source=source_id,
+                    league_code=WORLD_CUP_LEAGUE_CODE,
+                )
+                operations.append(
+                    {"operation": f"{source_id}_odds", "result": odds_result.model_dump(mode="json")}
+                )
+                issues.extend(f"{source_id}_odds:{error}" for error in odds_result.errors)
+
+        if include_research:
+            research_report = research_world_cup(service, hours=48, provider=research_provider)
+            operations.append({"operation": "research", "result": research_report})
+            issues.extend(f"research:{issue}" for issue in research_report.get("issues", []))
+    finally:
+        service.settings.cache.enabled = previous_cache_enabled
 
     matches = _world_cup_matches_on_date(service, match_date)
     match_ids = {match.id for match in matches}
@@ -154,7 +188,7 @@ def research_world_cup(
         match
         for match in service.repository.list_models("matches", Match)
         if _is_world_cup_match(match, service.settings)
-        and now <= match.kickoff_at.astimezone(service.settings.app.tzinfo) <= window_end
+        and now <= _world_cup_local_kickoff(match, service.settings) <= window_end
     ]
     findings: list[AgentFinding] = []
     errors: list[str] = []
@@ -238,10 +272,27 @@ def recommend_world_cup(
     match_date: str,
     stage: str = "advisory",
     ignore_final_window: bool = False,
+    include_parlays: bool = False,
+    parlay_stake_units: float = 5.0,
+    parlay_combo_count: int = 3,
+    refresh: bool = False,
+    refresh_research: bool = True,
+    refresh_research_provider: str = "auto",
 ) -> dict[str, Any]:
     normalized_stage = stage.lower().strip()
     if normalized_stage not in {"advisory", "final"}:
         raise ValueError(f"unsupported_world_cup_stage:{stage}")
+
+    refresh_report: dict[str, Any] | None = None
+    if refresh:
+        refresh_report = refresh_world_cup_data(
+            service,
+            match_date=match_date,
+            include_research=refresh_research,
+            research_provider=refresh_research_provider,
+            include_market_sources=True,
+            force_remote=True,
+        )
 
     now = datetime.now(service.settings.app.tzinfo)
     matches = _world_cup_matches_on_date(service, match_date)
@@ -290,7 +341,7 @@ def recommend_world_cup(
     ):
         status = "advisory"
 
-    return {
+    result: dict[str, Any] = {
         "checked_at": now.isoformat(),
         "date": match_date,
         "stage": normalized_stage,
@@ -303,6 +354,30 @@ def recommend_world_cup(
         "ignore_final_window": ignore_final_window,
         "issues": _dedupe(issues),
     }
+    if refresh_report is not None:
+        result["refresh"] = refresh_report
+        refresh_issues = [
+            issue
+            for issue in refresh_report.get("issues", [])
+            if not str(issue).startswith("research:")
+            and not str(issue).startswith("world_cup_qqsd_context_missing:")
+        ]
+        if refresh_issues:
+            result["issues"] = _dedupe([*result["issues"], *[f"refresh:{issue}" for issue in refresh_issues]])
+    if include_parlays:
+        from football_analysis.world_cup_parlay import recommend_world_cup_parlays
+
+        parlay_result = recommend_world_cup_parlays(
+            service,
+            match_date,
+            stake_units_per_combo=parlay_stake_units,
+            combo_count=parlay_combo_count,
+        )
+        result["parlays"] = parlay_result
+        result["parlay_status"] = parlay_result["status"]
+        if result["status"] == "blocked" and parlay_result["status"] == "advisory":
+            result["status"] = "advisory"
+    return result
 
 
 def execution_queue_world_cup(service: AnalysisService, include_past: bool = False, platform: str = "real") -> dict[str, Any]:
@@ -582,14 +657,18 @@ def _qqsd_data_summary(findings: list[AgentFinding]) -> dict[str, Any]:
 def _world_cup_matches_on_date(service: AnalysisService, match_date: str) -> list[Match]:
     parsed = date.fromisoformat(match_date)
     start = datetime.combine(parsed, time.min, tzinfo=service.settings.app.tzinfo)
-    end = datetime.combine(parsed, time.max, tzinfo=service.settings.app.tzinfo)
-    matches = [
-        match
-        for match in service.repository.list_models("matches", Match)
-        if _is_world_cup_match(match, service.settings)
-        and start <= match.kickoff_at.astimezone(service.settings.app.tzinfo) <= end
-    ]
-    matches.sort(key=lambda item: item.kickoff_at)
+    end = start + timedelta(hours=WORLD_CUP_RECOMMENDATION_WINDOW_HOURS)
+    now = datetime.now(service.settings.app.tzinfo)
+    lower_bound = max(start, now)
+    candidates: list[Match] = []
+    for match in service.repository.list_models("matches", Match):
+        if not _is_world_cup_match(match, service.settings):
+            continue
+        kickoff = _world_cup_local_kickoff(match, service.settings)
+        if lower_bound <= kickoff <= end:
+            candidates.append(match)
+    matches = _dedupe_world_cup_matches(candidates, service.settings)
+    matches.sort(key=lambda item: _world_cup_local_kickoff(item, service.settings))
     return matches
 
 
@@ -604,6 +683,68 @@ def _is_world_cup_match(match: Match, settings: Settings) -> bool:
             if item
         )
     return WORLD_CUP_LEAGUE_CODE in values or match.league.strip().upper() in values
+
+
+def _world_cup_local_kickoff(match: Match, settings: Settings) -> datetime:
+    kickoff = match.kickoff_at
+    if kickoff.tzinfo is None or kickoff.tzinfo.utcoffset(kickoff) is None:
+        source = match.id.split(":", 1)[0].lower()
+        if source in WORLD_CUP_UTC_SOURCE_PREFIXES:
+            kickoff = kickoff.replace(tzinfo=timezone.utc)
+        else:
+            kickoff = kickoff.replace(tzinfo=settings.app.tzinfo)
+    return kickoff.astimezone(settings.app.tzinfo)
+
+
+def _dedupe_world_cup_matches(matches: list[Match], settings: Settings) -> list[Match]:
+    best_by_event: dict[tuple[str, str, str], Match] = {}
+    for match in matches:
+        key = _world_cup_event_key(match, settings)
+        current = best_by_event.get(key)
+        if current is None or _world_cup_match_rank(match) > _world_cup_match_rank(current):
+            best_by_event[key] = match
+    return list(best_by_event.values())
+
+
+def _world_cup_event_key(match: Match, settings: Settings) -> tuple[str, str, str]:
+    kickoff_key = _world_cup_local_kickoff(match, settings).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+    teams = sorted([_world_cup_team_key(match.home_team), _world_cup_team_key(match.away_team)])
+    return (kickoff_key, teams[0], teams[1])
+
+
+def _world_cup_match_rank(match: Match) -> tuple[int, float, str]:
+    source = match.id.split(":", 1)[0].lower()
+    source_rank = {"the_odds_api": 30, "odds_api_io": 20, "qqsd": 10}.get(source, 0)
+    return (source_rank, match.data_completeness, match.id)
+
+
+def _world_cup_team_key(value: str) -> str:
+    normalized = value.lower().strip()
+    replacements = {
+        "捷克": "czechia",
+        "南非": "south africa",
+        "瑞士": "switzerland",
+        "波黑": "bosnia and herzegovina",
+        "加拿大": "canada",
+        "卡塔尔": "qatar",
+        "美国": "usa",
+        "澳大利": "australia",
+        "澳大利亚": "australia",
+        "摩洛哥": "morocco",
+        "苏格兰": "scotland",
+        "巴西": "brazil",
+        "海地": "haiti",
+        "土耳其": "turkey",
+        "巴拉圭": "paraguay",
+        "czech republic": "czechia",
+        "bosnia & herzegovina": "bosnia and herzegovina",
+        "korea republic": "south korea",
+        "united states": "usa",
+        "turkiye": "turkey",
+        "curaçao": "curacao",
+    }
+    normalized = replacements.get(normalized, normalized)
+    return "".join(ch for ch in normalized if ch.isalnum())
 
 
 def _world_cup_profile(settings: Settings):
@@ -742,7 +883,7 @@ def _credential_present(settings: Settings, source_id: str) -> bool:
 
 
 def _minutes_to_kickoff(match: Match, now: datetime, settings: Settings) -> float | None:
-    kickoff = match.kickoff_at.astimezone(settings.app.tzinfo)
+    kickoff = _world_cup_local_kickoff(match, settings)
     return (kickoff - now.astimezone(settings.app.tzinfo)).total_seconds() / 60.0
 
 
@@ -792,6 +933,22 @@ def _cross_checked_research_sources(findings: list[AgentFinding]) -> int:
 
 
 def _has_lineup_or_injury_context(findings: list[AgentFinding]) -> bool:
+    qqsd_context = _qqsd_context_payload(findings)
+    match_context = qqsd_context.get("match_context")
+    if isinstance(match_context, dict):
+        if int(match_context.get("injury_rows") or 0) > 0:
+            return True
+        for key in ("lineup_full", "lineup_detail", "lineup_simple"):
+            lineup = match_context.get(key)
+            if isinstance(lineup, dict) and any(
+                lineup.get(field)
+                for field in ("home_shape", "away_shape", "home_starters", "away_starters", "home_injuries", "away_injuries")
+            ):
+                return True
+    for key in ("injury_preview", "lineup_full", "lineup_detail", "lineup_simple"):
+        value = qqsd_context.get(key)
+        if value not in (None, {}, []):
+            return True
     needles = ("lineup", "starting", "injury", "injuries", "team news", "suspended", "阵容", "伤停", "首发")
     for finding in findings:
         payload_text = " ".join(str(value) for value in finding.payload.values()).lower()
@@ -802,7 +959,7 @@ def _has_lineup_or_injury_context(findings: list[AgentFinding]) -> bool:
 
 
 def _planned_world_cup_stake_for_day(service: AnalysisService, match: Match) -> float:
-    local_date = match.kickoff_at.astimezone(service.settings.app.tzinfo).date()
+    local_date = _world_cup_local_kickoff(match, service.settings).date()
     total = 0.0
     for recommendation in service.repository.list_models("recommendations", Recommendation):
         if recommendation.id == "":
@@ -810,7 +967,7 @@ def _planned_world_cup_stake_for_day(service: AnalysisService, match: Match) -> 
         stored_match = service.repository.get_model("matches", recommendation.match_id, Match)
         if stored_match is None or not _is_world_cup_match(stored_match, service.settings):
             continue
-        if stored_match.kickoff_at.astimezone(service.settings.app.tzinfo).date() != local_date:
+        if _world_cup_local_kickoff(stored_match, service.settings).date() != local_date:
             continue
         if recommendation.status is RecommendationStatus.recommended:
             total += float(recommendation.stake_units)

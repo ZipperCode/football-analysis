@@ -385,8 +385,11 @@ class IngestionService:
         fid = match.external_ids.get("qqsd_fid") or match.id.removeprefix("qqsd:")
         detail_payload = standings_payload = extreme_payload = None
         tools_payload = lingsi_payload = vote_payload = None
+        injury_preview_payload = lineup_simple_payload = lineup_detail_payload = lineup_full_payload = None
         europe_odds_history_payload = odds_summary_payload = odds_heat_payload = None
         handicap_europe_payload = league_stats_payload = None
+        betting_distribution_payload = same_odds_history_payload = odds_trend_payload = None
+        bifa_trade_payload = company_list_payload = odds_change_list_payload = None
         odds_timeline_payload = None
         qqsd_context_errors: list[dict[str, str]] = []
         enriched = match
@@ -469,6 +472,39 @@ class IngestionService:
         except Exception as exc:
             errors.append(f"qqsd_context_vote_infos:{fid}:{type(exc).__name__}:{exc}")
             qqsd_context_errors.append({"key": "vote_infos", "error": f"{type(exc).__name__}:{exc}"})
+        for key, endpoint, cache_key, loader in (
+            ("injury_preview", "injury_preview", f"qqsd:40025:{fid}", lambda: client.injury_preview(fid)),
+            ("lineup_simple", "lineup_simple", f"qqsd:41105:{fid}", lambda: client.lineup_simple(fid)),
+            ("lineup_detail", "lineup_detail", f"qqsd:41106:{fid}", lambda: client.lineup_detail(fid)),
+            ("lineup_full", "lineup_full", f"qqsd:41111:{fid}", lambda: client.lineup_full(fid)),
+            ("company_list", "company_list", "qqsd:41108:global", client.company_list),
+            ("odds_change_list", "odds_change_list", "qqsd:41112:global", client.odds_change_list),
+        ):
+            try:
+                payload = loader()
+                self.repository.save_raw_payload(
+                    "qqsd",
+                    endpoint,
+                    cache_key,
+                    200,
+                    payload,
+                    self.settings.cache.default_ttl_seconds,
+                )
+                if key == "injury_preview":
+                    injury_preview_payload = payload
+                elif key == "lineup_simple":
+                    lineup_simple_payload = payload
+                elif key == "lineup_detail":
+                    lineup_detail_payload = payload
+                elif key == "lineup_full":
+                    lineup_full_payload = payload
+                elif key == "company_list":
+                    company_list_payload = payload
+                elif key == "odds_change_list":
+                    odds_change_list_payload = payload
+            except Exception as exc:
+                errors.append(f"qqsd_context_{key}:{fid}:{type(exc).__name__}:{exc}")
+                qqsd_context_errors.append({"key": key, "error": f"{type(exc).__name__}:{exc}"})
         if self.settings.ingestion.qqsd_odds_timeline_enabled:
             try:
                 odds_timeline_payload = client.match_odds_timeline_bundle(
@@ -493,6 +529,10 @@ class IngestionService:
             ("odds_heat", "odds_heat", lambda: client.odds_heat(fid)),
             ("handicap_europe_odds", "handicap_europe_odds", lambda: client.handicap_europe_odds(fid)),
             ("league_stats", "league_stats", lambda: client.league_stats(fid)),
+            ("betting_distribution", "betting_distribution", lambda: client.betting_distribution(fid)),
+            ("same_odds_history", "same_odds_history", lambda: client.same_odds_history(fid)),
+            ("odds_trend", "odds_trend", lambda: client.odds_trend(fid)),
+            ("bifa_trade", "bifa_trade", lambda: client.bifa_trade(fid)),
         ):
             try:
                 payload = loader()
@@ -514,6 +554,14 @@ class IngestionService:
                     handicap_europe_payload = payload
                 elif key == "league_stats":
                     league_stats_payload = payload
+                elif key == "betting_distribution":
+                    betting_distribution_payload = payload
+                elif key == "same_odds_history":
+                    same_odds_history_payload = payload
+                elif key == "odds_trend":
+                    odds_trend_payload = payload
+                elif key == "bifa_trade":
+                    bifa_trade_payload = payload
             except Exception as exc:
                 errors.append(f"qqsd_context_{key}:{fid}:{type(exc).__name__}:{exc}")
                 qqsd_context_errors.append({"key": key, "error": f"{type(exc).__name__}:{exc}"})
@@ -523,6 +571,10 @@ class IngestionService:
             standings_payload=standings_payload,
             extreme_payload=extreme_payload,
             tools_payload=tools_payload,
+            injury_preview_payload=injury_preview_payload,
+            lineup_simple_payload=lineup_simple_payload,
+            lineup_detail_payload=lineup_detail_payload,
+            lineup_full_payload=lineup_full_payload,
             lingsi_payload=lingsi_payload,
             vote_payload=vote_payload,
             europe_odds_history_payload=europe_odds_history_payload,
@@ -530,6 +582,12 @@ class IngestionService:
             odds_heat_payload=odds_heat_payload,
             handicap_europe_payload=handicap_europe_payload,
             league_stats_payload=league_stats_payload,
+            betting_distribution_payload=betting_distribution_payload,
+            same_odds_history_payload=same_odds_history_payload,
+            odds_trend_payload=odds_trend_payload,
+            bifa_trade_payload=bifa_trade_payload,
+            company_list_payload=company_list_payload,
+            odds_change_list_payload=odds_change_list_payload,
             odds_timeline_payload=odds_timeline_payload,
             errors=qqsd_context_errors,
         )

@@ -116,6 +116,7 @@ footballctl ingest standings --league EPL --season 2025 --source api_football --
 footballctl ingest historical --league E0 --season 2526 --path data/historical/2526/E0.csv --json
 footballctl backtest historical --league E0 --season 2526 --json
 footballctl backtest portfolio --json
+footballctl backtest kelly --league I1 --family asian-away --quick --json
 footballctl backtest profile-audit --json
 footballctl odds-readiness --json
 footballctl live-audit --json
@@ -162,6 +163,8 @@ footballctl performance --by-league --json
 
 `footballctl backtest portfolio --json` reports the current fast multi-strategy candidate set. Use `footballctl backtest portfolio --scan-phases --leagues I1 --season-phases middle --json` for targeted league/phase overlay scans. `footballctl backtest optimize` and `footballctl backtest walk-forward` accept `--season-phases all,early,middle,late` for slower phase-filtered optimization runs.
 
+`footballctl backtest kelly --league I1 --family asian-away --quick --json` converts the top long-horizon candidate into a bankroll curve report with target CAGR and max-drawdown checks. It is an audit/report command, not proof of guaranteed annual profit. Under the default 10000u bankroll baseline, the current I1 long-horizon candidate has positive ROI but does not pass the 20% CAGR target because production stake caps keep exposure deliberately small.
+
 Validated strategy profiles are listed under `strategy_profiles` in `config/default.yaml`. Live recommendations include a matched profile in `odds_basis.strategy_profile` and `score_breakdown.strategy_profile` when the current league, market, and selection match the backtested pool. The score also includes `league_profile` and `strategy_confidence_class` so production review can distinguish validated strategies from paper-only candidates.
 
 Run `footballctl backtest profile-audit --json` before production rollout to verify configured strategy profiles still match the current backtest portfolio.
@@ -180,7 +183,7 @@ The live gate also blocks stale market data and pauses real stakes after recent 
 
 Real-platform `record-bet` is the final execution guard. It rejects unmatched live recommendations, stakes above the approved cap, cumulative duplicate real stakes on the same match/market/selection, execution odds below the approved recommendation price after `max_execution_odds_slippage`, and real-platform records at or after kickoff. Paper, paper-trading, and simulation records remain allowed for observation.
 
-Run `footballctl production-execution-queue --json` after production status is ready. It rebuilds the live audit, keeps only current live-gate-approved recommendations, subtracts existing real-platform stake on the same match/market/selection, and emits an idempotency key plus a safe `footballctl record-bet ... --json` command for the remaining stake. Automated executors should still use the actual matched odds and must reject execution below `minimum_execution_odds`.
+Run `footballctl production-execution-queue --json` after production status is ready. It rebuilds the live audit, keeps only current live-gate-approved recommendations, subtracts existing real-platform stake on the same match/market/selection, and emits an idempotency key plus a safe `footballctl record-bet ... --json` command for the remaining stake. Queue items now include `kelly_fraction`, `kelly_stake_units`, `portfolio_adjusted`, `correlation_group`, `mutual_exclusion_tag`, and `expires_at` so manual operators can execute a complete betting slip. Automated executors should still use the actual matched odds and must reject execution below `minimum_execution_odds`.
 
 世界杯使用独立的 `world_cup_high_winrate` profile，不复用 EPL/Serie A 长赛季 profile 作为实盘依据。`WORLD_CUP` 配置为受控 live，但只有 `footballctl world-cup recommend --stage final --json` 写入了 `world_cup_high_winrate.passed: true` 的 `1x2` 推荐后，`production-execution-queue --league WORLD_CUP --json` 才会生成队列；普通评分、AH/大小球或未过 final gate 的候选都会保持 0 仓观察。操作顺序：
 
@@ -189,12 +192,13 @@ footballctl world-cup refresh-data --date YYYY-MM-DD --json
 footballctl world-cup research --hours 48 --provider auto --json
 footballctl world-cup backtest --json
 footballctl world-cup recommend --date YYYY-MM-DD --stage advisory --json
+footballctl world-cup recommend --date YYYY-MM-DD --stage advisory --parlays --parlay-stake-units 5 --json
 footballctl world-cup recommend --date YYYY-MM-DD --stage final --json
 footballctl production-execution-queue --league WORLD_CUP --json
 footballctl live-decision --league WORLD_CUP --json
 ```
 
-`advisory` 阶段是 T-12h 到 T-6h 的观察建议，始终 `stake_units: 0`；不在窗口内会返回 `world_cup_advisory_window:*` 作为审计原因。`final` 阶段只在 T-90m 到 T-60m 内尝试升级，并要求历史命中率至少 65%、当前 1x2 赔率新鲜且至少 2 个 bookmaker、至少 2 个研究来源交叉验证、包含首发/伤停/球队新闻上下文、存在 Exa/Firecrawl/Tavily 之一的搜索凭证。通过后 A 级 0.5u、B 级 0.25u、世界杯单日上限 1.0u，并仍要经过 `live-decision` 的最终 go/no-go；队列只用于人工按 `minimum_execution_odds` 执行，不自动下单。
+`advisory --parlays` 会基于新鲜 QQSD/赔率证据生成 3 注 2 串 1，默认每注 5u，支持亚盘和大小球混合串，并输出中文球队名、组合赔率、预计返还和错一腿容错测算；它仍是 advisory-only，不进入生产执行队列。`advisory` 阶段是 T-12h 到 T-6h 的观察建议，始终 `stake_units: 0`；不在窗口内会返回 `world_cup_advisory_window:*` 作为审计原因。`final` 阶段只在 T-90m 到 T-60m 内尝试升级，并要求历史命中率至少 65%、当前 1x2 赔率新鲜且至少 2 个 bookmaker、至少 2 个研究来源交叉验证、包含首发/伤停/球队新闻上下文、存在 Exa/Firecrawl/Tavily 之一的搜索凭证。通过后 A 级 0.5u、B 级 0.25u、世界杯单日上限 1.0u，并仍要经过 `live-decision` 的最终 go/no-go；队列只用于人工按 `minimum_execution_odds` 执行，不自动下单。
 
 Run `footballctl production-execute --json` for the production executor dry-run. It consumes the same queue and returns the exact records it would write without changing the database. After the external placement or operator confirmation is done, pass an execution fill file and add `--execute-records --require-fills --json`; it writes approved queue items into the local real-platform bet ledger through the same `record-bet` live gate, using the queue idempotency key as the bet id. This is record-only automation, not bookmaker/exchange order placement. Fill files are JSON objects keyed by `idempotency_key` or `recommendation_id`, for example `{"production-execution:...": {"odds": 8.95, "stake_units": 0.3, "platform": "real", "external_bet_id": "book:123"}}`.
 

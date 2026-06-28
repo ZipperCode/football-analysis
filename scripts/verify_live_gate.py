@@ -28,6 +28,9 @@ def main() -> None:
             assert passed.stake_units == 0.4, "profile cap must limit stake to 0.4u"
             assert passed.score_breakdown["live_gate"]["passed"] is True, "live gate payload must pass"
             assert passed.score_breakdown["live_gate"]["profile_id"] == "i1_middle_ah_away_live_long_horizon"
+            assert passed.score_breakdown["live_gate"]["kelly_stake_units"] == 0.4
+            assert passed.score_breakdown["live_gate"]["kelly_fraction"] > 0.0
+            assert passed.score_breakdown["live_gate"]["approved_odds"] == 2.12
 
             _insert_live_candidate(repository, "single-bookmaker", bookmaker_count=1)
             single_bookmaker = service.analyze_match("single-bookmaker").recommendation

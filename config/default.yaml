@@ -420,6 +420,22 @@ backtest:
   default_league: E0
   default_season: "2526"
 
+bankroll:
+  initial_units: 10000
+  unit_basis: fixed
+
+kelly:
+  mode: fractional
+  fraction: 0.25
+  min_edge: 0.025
+  max_stake_fraction: 0.005
+
+portfolio:
+  max_daily_exposure_fraction: 0.00012
+  correlation_penalty_same_league: 0.7
+  correlation_penalty_same_match: 1.0
+  max_correlated_stakes_per_day: 3
+
 live_trading:
   enabled: true
   min_bookmakers: 2
@@ -449,6 +465,10 @@ live_trading:
   max_stake_units_per_pick: 0.5
   max_daily_stake_units: 1.2
   world_cup_final_window_gate_enabled: false
+  # Rolling realized-CLV brake. Disabled until enough live bets carry closing odds.
+  rolling_clv_brake_enabled: false
+  min_rolling_clv_settled_bets: 5
+  min_rolling_clv: 0.0
 
 strategy_profiles:
   - id: world_cup_high_winrate
@@ -591,6 +611,16 @@ thresholds:
   min_value_score: 62.0
   max_risk_score: 55.0
   max_stake_units: 1.5
+
+devig:
+  # Sharp-anchor de-vigging. Disabled until backtest comparison validates EV-form edge.
+  enabled: false
+  method: power
+  sharp_bookmaker_priority:
+    - Pinnacle
+    - Betfair Exchange
+    - Smarkets
+  min_anchor_outcomes: 2
 
 data_sources:
   api_football:

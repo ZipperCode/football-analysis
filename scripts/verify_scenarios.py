@@ -92,6 +92,61 @@ def main() -> None:
             assert world_cup.score_breakdown["league_profile"]["code"] == "WORLD_CUP", (
                 "Odds-API.io World Cup provider label must match configured league profile"
             )
+            qqsd_context = AgentFinding(
+                id="world-cup-provider-label:qqsd-context",
+                match_id=world_cup_match.id,
+                agent_name="qqsd_full_context",
+                summary="QQSD完整数据：阵容伤停与同赔历史已覆盖。",
+                confidence=0.7,
+                payload={
+                    "match_context": {
+                        "injury_rows": 2,
+                        "h2h_rows": 4,
+                        "lineup_full": {
+                            "home_shape": "4-3-3",
+                            "away_shape": "5-3-2",
+                            "home_starters": 11,
+                            "away_starters": 11,
+                        },
+                    },
+                    "odds_context": {
+                        "same_odds_history": {
+                            "spf": {"count": "120", "winrate": "57%"},
+                        },
+                        "betting_distribution": {"tend": {"tradetend": "主胜热度稳定"}},
+                        "bifa_trade": {"amount": {"total": "2800"}},
+                        "odds_trend": {"euro": {"win": "2.10", "draw": "3.30", "lost": "3.40"}},
+                        "odds_change_rows": 3,
+                        "company_count": 25,
+                    },
+                },
+            )
+            world_cup_with_qqsd = score_match(world_cup_match, world_cup_odds, [qqsd_context], settings)
+            assert world_cup_with_qqsd.value_score > world_cup.value_score
+            assert world_cup_with_qqsd.confidence > world_cup.confidence
+            qqsd_evidence = world_cup_with_qqsd.score_breakdown["qqsd_evidence"]
+            assert qqsd_evidence["lineup_quality"] == 3
+            assert qqsd_evidence["value_delta"] > 0
+            assert "QQSD同赔spf样本120场/胜率57%" in world_cup_with_qqsd.reason
+
+            negative_qqsd_context = qqsd_context.model_copy(
+                update={
+                    "id": "world-cup-provider-label:qqsd-negative-context",
+                    "payload": {
+                        "match_context": {},
+                        "odds_context": {
+                            "same_odds_history": {
+                                "spf": {"count": "120", "winrate": "41%"},
+                            },
+                            "betting_distribution": {"tend": {"tradetend": "主胜过热且分歧明显"}},
+                        },
+                    },
+                }
+            )
+            world_cup_negative_qqsd = score_match(world_cup_match, world_cup_odds, [negative_qqsd_context], settings)
+            assert world_cup_negative_qqsd.value_score < world_cup.value_score
+            assert "qqsd_same_odds_negative" in world_cup_negative_qqsd.risk_tags
+            assert "qqsd_lineup_injury_missing" in world_cup_negative_qqsd.risk_tags
 
             brazil_payload = matches[0].model_dump()
             brazil_payload.update(

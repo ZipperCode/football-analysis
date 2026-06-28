@@ -741,6 +741,16 @@ def world_cup_recommend(
         "--ignore-final-window",
         help="Do not block World Cup final recommendations solely because they are outside T-90m to T-60m.",
     ),
+    include_parlays: bool = typer.Option(False, "--parlays", help="Include advisory 2-leg parlay combinations."),
+    parlay_stake_units: float = typer.Option(5.0, "--parlay-stake-units", help="Stake units per parlay combo."),
+    parlay_combos: int = typer.Option(3, "--parlay-combos", help="Number of parlay combos to return."),
+    refresh: bool = typer.Option(True, "--refresh/--skip-refresh", help="Refresh current World Cup data before scoring."),
+    refresh_research: bool = typer.Option(
+        True,
+        "--refresh-research/--skip-refresh-research",
+        help="Run research during the pre-recommendation refresh.",
+    ),
+    refresh_provider: str = typer.Option("auto", "--refresh-provider", help="Research provider used during refresh."),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
 ) -> None:
     service = get_service()
@@ -751,11 +761,57 @@ def world_cup_recommend(
         match_date=match_date,
         stage=stage,
         ignore_final_window=ignore_final_window,
+        include_parlays=include_parlays,
+        parlay_stake_units=parlay_stake_units,
+        parlay_combo_count=parlay_combos,
+        refresh=refresh,
+        refresh_research=refresh_research,
+        refresh_research_provider=refresh_provider,
     )
     if as_json:
         _print_json(result)
         return
+    if include_parlays:
+        _print_world_cup_parlay_summary(result)
+        return
     console.print(result)
+
+
+def _print_world_cup_parlay_summary(result: dict[str, Any]) -> None:
+    console.print(
+        f"World Cup {result['date']} stage={result['stage']} "
+        f"status={result['status']} recommendations={len(result.get('recommendations', []))}"
+    )
+    parlays = result.get("parlays") if isinstance(result.get("parlays"), dict) else {}
+    console.print(
+        f"2串1组合: status={parlays.get('status')} "
+        f"stake={parlays.get('stake_units_per_combo')}u x {len(parlays.get('combinations', []))} "
+        f"total={parlays.get('total_stake_units')}u"
+    )
+    table = Table("注单", "组合", "赔率", "预计返还", "EV", "风险")
+    for index, combo in enumerate(parlays.get("combinations", []), start=1):
+        legs = combo.get("legs", [])
+        leg_text = " × ".join(
+            f"{leg.get('match_zh')} {leg.get('market_label')} @{leg.get('price')}"
+            for leg in legs
+        )
+        table.add_row(
+            f"{index}",
+            leg_text,
+            f"{combo.get('combined_odds', 0):.2f}",
+            f"{combo.get('max_return_units', 0):.2f}u",
+            f"{combo.get('expected_value', 0):+.3f}",
+            ", ".join(combo.get("risk_tags", [])[:3]) or "-",
+        )
+    console.print(table)
+    tolerance = parlays.get("one_miss_tolerance", {})
+    if tolerance:
+        console.print(
+            f"容错: {tolerance.get('mode')} worst_one_miss_net="
+            f"{tolerance.get('worst_one_miss_net_units')}u"
+        )
+    if parlays.get("issues"):
+        console.print("Issues: " + ", ".join(parlays["issues"][:4]))
 
 
 @app.command("production-cycle")
@@ -2831,6 +2887,34 @@ def backtest_portfolio(
         leagues=_split_csv(leagues),
         season_phases=_split_csv(season_phases),
         scan_phases=scan_phases,
+    )
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+
+@backtest_app.command("kelly")
+def backtest_kelly(
+    league: str = typer.Option("I1", "--league"),
+    family: str = typer.Option("asian-away", "--family"),
+    quick: bool = typer.Option(True, "--quick/--full-scan", help="Use the quick long-horizon regression candidate."),
+    initial_bankroll_units: float = typer.Option(10000.0, "--initial-bankroll-units"),
+    target_cagr: float = typer.Option(0.20, "--target-cagr"),
+    max_drawdown_pct: float = typer.Option(0.20, "--max-drawdown-pct"),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    from football_analysis.bankroll import build_kelly_bankroll_report
+
+    result = build_kelly_bankroll_report(
+        service.repository,
+        league=league,
+        family=family,
+        quick=quick,
+        initial_bankroll_units=initial_bankroll_units,
+        target_cagr=target_cagr,
+        max_allowed_drawdown_pct=max_drawdown_pct,
     )
     if as_json:
         _print_json(result)

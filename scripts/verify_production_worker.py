@@ -3687,7 +3687,14 @@ def _production_execution_queue_report(existing_stake_units: float) -> dict[str,
             "tier_policy": {"matched": True, "passed": True},
         },
         score_breakdown={
-            "live_gate": {"passed": True, "gates_failed": []},
+            "live_gate": {
+                "passed": True,
+                "gates_failed": [],
+                "kelly_fraction": 0.0125,
+                "kelly_stake_units": 0.5,
+                "portfolio_adjusted": False,
+                "correlation_group": "2026-06-13:Brazil - Brasileiro Serie A:asian_handicap",
+            },
             "strategy_profile": {"matched": True, "id": "bra_ah_away"},
             "strategy_confidence_class": "validated_strategy",
             "tier_policy": {"matched": True, "passed": True},
@@ -3760,6 +3767,12 @@ def test_production_execution_queue_generates_safe_record_bet_command() -> None:
     assert item["normalized_selection"] == "AH_AWAY"
     assert item["approved_odds"] == 2.0
     assert item["minimum_execution_odds"] == 1.98
+    assert item["expires_at"] < item["kickoff_at"]
+    assert item["mutual_exclusion_tag"] == "queue-match-1"
+    assert item["correlation_group"] == "2026-06-13:Brazil - Brasileiro Serie A:asian_handicap"
+    assert item["kelly_fraction"] == 0.0125
+    assert item["kelly_stake_units"] == 0.5
+    assert item["portfolio_adjusted"] is False
     assert item["approved_stake_units"] == 0.5
     assert item["existing_real_stake_units"] == 0.2
     assert item["remaining_stake_units"] == 0.3

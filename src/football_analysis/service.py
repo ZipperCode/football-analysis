@@ -24,6 +24,7 @@ from football_analysis.models import (
 from football_analysis.db import StructuredRepository
 from football_analysis.ingestion import IngestionService
 from football_analysis.live_gate import allocate_live_stakes, apply_live_gate
+from football_analysis.portfolio import apply_portfolio_constraints
 from football_analysis.scoring import _normalized_strategy_selection, score_match
 from football_analysis.seed_data import build_seed_dataset
 from football_analysis.settings import Settings, load_settings
@@ -217,6 +218,12 @@ class AnalysisService:
                 matches_by_id[match.id] = match
                 recommendations.append(recommendation)
         allocated = allocate_live_stakes(recommendations, matches_by_id, self.settings)
+        allocated = apply_portfolio_constraints(
+            allocated,
+            matches_by_id,
+            self.settings.portfolio,
+            bankroll_units=self.settings.bankroll.initial_units,
+        )
         allocated_by_id = {recommendation.id: recommendation for recommendation in allocated}
         for recommendation in allocated:
             self.repository.upsert_model("recommendations", recommendation.id, recommendation)

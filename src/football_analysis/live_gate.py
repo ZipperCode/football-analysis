@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from football_analysis.kelly import calculate_kelly_fraction, calculate_kelly_stake
 from football_analysis.models import BetLog, Match, OddsSnapshot, Recommendation, RecommendationStatus
 from football_analysis.settings import Settings, StrategyProfileSettings
 
@@ -86,8 +87,23 @@ def apply_live_gate(
     )
     passed = recommendation.status is RecommendationStatus.recommended and not gates_failed
     stake_cap = _stake_cap(settings, profile)
-    stake_units = min(recommendation.stake_units, stake_cap) if passed else 0.0
+    approved_odds = _approved_odds(recommendation)
+    edge = _recommendation_edge(recommendation)
+    kelly_fraction = calculate_kelly_fraction(edge, approved_odds or 0.0, settings.kelly)
+    kelly_stake_units = (
+        calculate_kelly_stake(
+            edge,
+            approved_odds or 0.0,
+            settings.bankroll.initial_units,
+            settings.kelly,
+            stake_cap_units=stake_cap,
+        )
+        if passed
+        else 0.0
+    )
+    stake_units = min(recommendation.stake_units, stake_cap, kelly_stake_units) if passed else 0.0
     rolling = _rolling_performance(bet_logs, settings)
+    rolling_clv = _rolling_clv(bet_logs, settings)
     odds_freshness = _odds_freshness(odds_snapshots, recommendation, settings)
     effective_min_bookmakers = int(
         _effective_tier_threshold(
@@ -116,10 +132,15 @@ def apply_live_gate(
         "rolling_profit_units": rolling["profit_units"],
         "rolling_loss_units": rolling["loss_units"],
         "rolling_roi": rolling["roi"],
+        "rolling_clv_observations": rolling_clv["observations"],
+        "rolling_clv_average": rolling_clv["average_clv"],
         "daily_stake_units": _daily_stake_units(bet_logs, match.kickoff_at),
         "max_daily_stake_units": settings.live_trading.max_daily_stake_units,
         "season_phase": _live_season_phase(match.kickoff_at),
         "stake_cap_units": stake_cap,
+        "approved_odds": approved_odds,
+        "kelly_fraction": kelly_fraction,
+        "kelly_stake_units": kelly_stake_units,
         "applied_stake_units": round(stake_units, 3),
         "gates_failed": gates_failed,
     }
@@ -147,7 +168,7 @@ def apply_live_gate(
                 "risk_tags": risk_tags,
                 "stake_units": round(stake_units, 3),
                 "reason": recommendation.reason
-                + f" 实盘闸门通过，单注仓位按 profile/全局上限限制为 {stake_units:.2f}u。",
+                + f" 实盘闸门通过，单注仓位按 Kelly/profile/全局上限限制为 {stake_units:.2f}u。",
             }
         )
     return recommendation.model_copy(
@@ -288,6 +309,7 @@ def _live_gate_failures(
     if recent_losses >= live.max_recent_consecutive_losses:
         gates_failed.append(f"live_recent_consecutive_losses:{recent_losses}/{live.max_recent_consecutive_losses}")
     gates_failed.extend(_rolling_performance_failures(bet_logs, settings))
+    gates_failed.extend(_rolling_clv_failures(bet_logs, settings))
     if profile is not None:
         gates_failed.extend(_phase_failures(profile, match))
         gates_failed.extend(_profile_failures(profile, settings))
@@ -489,6 +511,15 @@ def _recommendation_edge(recommendation: Recommendation) -> float:
         return 0.0
 
 
+def _approved_odds(recommendation: Recommendation) -> float | None:
+    value = recommendation.odds_basis.get("best_price")
+    try:
+        odds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return odds if odds > 1.0 else None
+
+
 def _stake_cap(settings: Settings, profile: StrategyProfileSettings | None) -> float:
     caps = [settings.live_trading.max_stake_units_per_pick, settings.thresholds.max_stake_units]
     if profile is not None and profile.max_stake_units is not None:
@@ -555,3 +586,41 @@ def _rolling_performance(bet_logs: list[BetLog], settings: Settings) -> dict[str
         "loss_units": round(max(0.0, -profit), 3),
         "roi": round(roi, 4) if roi is not None else None,
     }
+
+
+def _realized_clv(bet: BetLog) -> float | None:
+    """Realized closing line value for a settled bet: ``placed_odds / closing_odds - 1``."""
+    if bet.closing_odds is None or bet.odds <= 0.0 or bet.closing_odds <= 0.0:
+        return None
+    return (bet.odds / bet.closing_odds) - 1.0
+
+
+def _rolling_clv(bet_logs: list[BetLog], settings: Settings) -> dict[str, float | int | None]:
+    """Rolling realized-CLV over the most recent settled bets that have a closing line."""
+    window = settings.live_trading.rolling_window_settled_bets
+    settled = sorted(
+        [bet for bet in bet_logs if bet.profit_units is not None and _realized_clv(bet) is not None],
+        key=lambda item: item.placed_at,
+        reverse=True,
+    )[:window]
+    clv_values = [value for bet in settled if (value := _realized_clv(bet)) is not None]
+    average = sum(clv_values) / len(clv_values) if clv_values else None
+    return {
+        "observations": len(clv_values),
+        "average_clv": round(average, 6) if average is not None else None,
+        "min_clv": round(min(clv_values), 6) if clv_values else None,
+        "max_clv": round(max(clv_values), 6) if clv_values else None,
+    }
+
+
+def _rolling_clv_failures(bet_logs: list[BetLog], settings: Settings) -> list[str]:
+    live = settings.live_trading
+    if not live.rolling_clv_brake_enabled:
+        return []
+    stats = _rolling_clv(bet_logs, settings)
+    if int(stats["observations"]) < live.min_rolling_clv_settled_bets:
+        return []
+    average = stats["average_clv"]
+    if average is not None and float(average) <= live.min_rolling_clv:
+        return [f"live_rolling_clv:{float(average):.4f}/{live.min_rolling_clv:.4f}"]
+    return []

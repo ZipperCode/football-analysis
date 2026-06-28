@@ -140,6 +140,8 @@ def main() -> None:
             assert final_pick["score_breakdown"]["world_cup_high_winrate"]["passed"] is True
             assert final_pick["score_breakdown"]["world_cup_high_winrate"]["qqsd_data"]["available"] is True
             assert final_pick["score_breakdown"]["world_cup_high_winrate"]["qqsd_data"]["markets"]["asian_handicap"]["history_row_count"] == 8
+            assert final_pick["score_breakdown"]["qqsd_evidence"]["lineup_quality"] == 3
+            assert final_pick["score_breakdown"]["qqsd_evidence"]["value_delta"] > 0
             assert final_pick["score_breakdown"]["live_gate"]["passed"] is True
 
             outside_window_at = datetime.now(timezone.utc) + timedelta(hours=8)
@@ -295,7 +297,31 @@ def _store_qqsd_context(repository: StructuredRepository, match_id: str) -> None
             "fid": match_id,
             "detail": {"fid": match_id, "hname": "Qatar", "aname": "Switzerland"},
             "standings": {"hpower": {"total_score": "91"}, "apower": {"total_score": "114"}},
-            "odds_context": {"europe_history_rows": 12, "summary_rows": 4},
+            "match_context": {
+                "injury_rows": 1,
+                "h2h_rows": 3,
+                "lineup_full": {
+                    "home_shape": "4-2-3-1",
+                    "away_shape": "3-4-2-1",
+                    "home_starters": 11,
+                    "away_starters": 11,
+                },
+            },
+            "injury_preview": {"shangbing": {"home": [{"name": "rotation forward"}]}, "xinshui": "No major injury concern."},
+            "lineup_full": {
+                "home": {"zhenxing": "4-2-3-1", "shoufa": [{"name": str(i)} for i in range(11)]},
+                "away": {"zhenxing": "3-4-2-1", "shoufa": [{"name": str(i)} for i in range(11)]},
+            },
+            "odds_context": {
+                "europe_history_rows": 12,
+                "summary_rows": 4,
+                "same_odds_history": {"spf": {"count": "120", "winrate": "56%"}},
+                "betting_distribution": {"tend": {"tradetend": "客胜热度稳定"}},
+                "bifa_trade": {"amount": {"total": "4100"}},
+                "odds_trend": {"euro": {"win": "3.80", "draw": "3.40", "lost": "1.94"}},
+                "odds_change_rows": 5,
+                "company_count": 25,
+            },
             "odds_timeline": {
                 "provider": "qqsd",
                 "fid": match_id,

@@ -8,13 +8,23 @@ from football_analysis.db import StructuredRepository
 from football_analysis.ingestion import IngestionService
 from football_analysis.datasources.qqsd import (
     QQSD_ASIAN_HANDICAP_ENDPOINT,
+    QQSD_BETTING_DISTRIBUTION_ENDPOINT,
+    QQSD_BIFA_TRADE_ENDPOINT,
+    QQSD_COMPANY_LIST_ENDPOINT,
     QQSD_DEEP_CONTEXT_ENDPOINT_IDS,
     QQSD_EUROPE_ODDS_ENDPOINT,
     QQSD_HANDICAP_TOTALS_ODDS_HISTORY_ENDPOINT,
     QQSD_HANDICAP_EUROPE_ODDS_ENDPOINT,
+    QQSD_INJURY_PREVIEW_ENDPOINT,
+    QQSD_LINEUP_DETAIL_ENDPOINT,
+    QQSD_LINEUP_FULL_ENDPOINT,
+    QQSD_LINEUP_SIMPLE_ENDPOINT,
     QQSD_LIVE_ODDS_ENDPOINT_IDS,
+    QQSD_ODDS_CHANGE_LIST_ENDPOINT,
     QQSD_ODDS_SUMMARY_ENDPOINT,
+    QQSD_ODDS_TREND_ENDPOINT,
     QQSD_OVER_UNDER_ENDPOINT,
+    QQSD_SAME_ODDS_HISTORY_ENDPOINT,
     build_context_finding,
     compute_ckey,
     find_league_entry,
@@ -47,11 +57,21 @@ def main() -> None:
     assert compute_ckey(40018) == "933048f2075007997de5666c5540a849"
     assert compute_ckey(40020) == "efff0a84f860ff38fe8f5abfa0a68496"
     assert compute_ckey(40022) == "1b86560ccd58b069ce4a21e872d4ab94"
+    assert compute_ckey(40025) == "4fd84f96f08d6296b55babbd285a71af"
     assert compute_ckey(40029) == "180cb5ec5433cefa0e604df978699a4b"
+    assert compute_ckey(40030) == "374f4ff6f3a4740b8c5ac1d4778ac510"
+    assert compute_ckey(40032) == "c9db760526b19bf7ee712dbdd40c8a78"
+    assert compute_ckey(40035) == "def1839f39754169e74492de9e9142d6"
     assert compute_ckey(40038) == "3b780c66fe8928785469a976d7d9b22d"
     assert compute_ckey(40046) == "46f4e303da44acf341f3b2bd012acc52"
     assert compute_ckey(41000) == "c28d797bdf3f789e759150cdac45957a"
     assert compute_ckey(41004) == "1a54d0351a921dbbdf4d986d10e6074c"
+    assert compute_ckey(41105) == "cc8c73faf226a96db4dd8e4a90de2864"
+    assert compute_ckey(41106) == "85a5386f73e6b42ef4dfca0c13368855"
+    assert compute_ckey(41107) == "aa8474c4205dbebba3b3d4ea61516e92"
+    assert compute_ckey(41108) == "b8b5a9930902e0688d62437e5ac5d7c5"
+    assert compute_ckey(41111) == "3c51b183a98f236f4291d242a3156ab0"
+    assert compute_ckey(41112) == "3933efc8f670e8766a92a81a611a9057"
     assert compute_ckey(50012) == "71fa21bd6c2ff00d9a3925abcad8c4d0"
     assert compute_ckey(50017) == "8ecd4ec4f7b98c8b0c56eb0d605868f2"
     assert compute_ckey(91002) == "56a32ccafeb41af4409e4c37b080c787"
@@ -66,6 +86,15 @@ def main() -> None:
     assert catalog[QQSD_HANDICAP_TOTALS_ODDS_HISTORY_ENDPOINT]["timeline_status"] == "not_primary_timeline"
     assert catalog[QQSD_HANDICAP_TOTALS_ODDS_HISTORY_ENDPOINT]["execution_role"] == "context_only"
     assert catalog[QQSD_ODDS_SUMMARY_ENDPOINT]["market_type"] == "mixed"
+    assert catalog[QQSD_INJURY_PREVIEW_ENDPOINT]["name"] == "injury_preview"
+    assert catalog[QQSD_LINEUP_DETAIL_ENDPOINT]["name"] == "lineup_detail"
+    assert catalog[QQSD_LINEUP_FULL_ENDPOINT]["name"] == "lineup_full"
+    assert catalog[QQSD_BETTING_DISTRIBUTION_ENDPOINT]["category"] == "odds_context"
+    assert catalog[QQSD_SAME_ODDS_HISTORY_ENDPOINT]["name"] == "same_odds_history"
+    assert catalog[QQSD_ODDS_TREND_ENDPOINT]["name"] == "odds_trend"
+    assert catalog[QQSD_BIFA_TRADE_ENDPOINT]["name"] == "bifa_trade"
+    assert catalog[QQSD_COMPANY_LIST_ENDPOINT]["execution_role"] == "company_mapping"
+    assert catalog[QQSD_ODDS_CHANGE_LIST_ENDPOINT]["name"] == "odds_change_list"
     assert catalog[QQSD_HANDICAP_EUROPE_ODDS_ENDPOINT]["market_type"] == "handicap_1x2"
     assert catalog[QQSD_HANDICAP_EUROPE_ODDS_ENDPOINT]["execution_role"] == "context_only"
     assert set(QQSD_LIVE_ODDS_ENDPOINT_IDS) == {"40004", "40005", "40020"}
@@ -440,6 +469,58 @@ def main() -> None:
             {"title": "指数倾向", "url": "servicepanhelper://"},
         ],
     }
+    injury_preview_payload = {
+        "code": 100,
+        "data": {
+            "shangbing": {
+                "home": [{"name": "主队前锋", "reason": "伤缺"}],
+                "away": [{"name": "客队后卫", "reason": "停赛"}],
+            },
+            "match": [{"hscore": "2", "ascore": "1"}, {"hscore": "0", "ascore": "0"}],
+            "xinshui": "主队阵容完整度略低，客队防线有隐患。",
+        },
+    }
+    lineup_simple_payload = {
+        "code": 100,
+        "data": {
+            "home": {
+                "zhenxing": "4-2-3-1",
+                "shoufa": [{"name": "主队门将"}, {"name": "主队前锋"}],
+                "shangbing": [{"name": "主队前锋"}],
+            },
+            "away": {
+                "zhenxing": "4-3-3",
+                "shoufa": [{"name": "客队门将"}, {"name": "客队前锋"}],
+            },
+        },
+    }
+    lineup_detail_payload = {
+        "code": 100,
+        "data": {
+            "home": {
+                "name": "瓦萨",
+                "value": "7012万",
+                "numberone": {"name": "核心中场", "role": "中场", "goals": "5"},
+                "shoufa": [{"name": "主队门将"}, {"name": "主队中场"}],
+                "substitute": [{"name": "主队替补"}],
+            },
+            "away": {
+                "name": "库奥皮奥",
+                "value": "4.2亿",
+                "numberone": {"name": "客队射手", "role": "前锋", "goals": "9"},
+                "shoufa": [{"name": "客队门将"}, {"name": "客队射手"}],
+                "substitute": [{"name": "客队替补"}],
+            },
+        },
+    }
+    lineup_full_payload = {
+        "code": 100,
+        "data": {
+            "type": "1",
+            "home": {"zhenxing": "3-4-1-2", "shoufa": [{"name": "主队A"}, {"name": "主队B"}]},
+            "away": {"zhenxing": "5-3-2", "shoufa": [{"name": "客队A"}, {"name": "客队B"}]},
+        },
+    }
     lingsi_payload = {"code": 100, "data": {"title": "球球龙虾", "type": "app", "url": "https://example.invalid"}}
     vote_payload = {
         "code": 100,
@@ -485,12 +566,68 @@ def main() -> None:
         "code": 100,
         "data": {"total": "24", "win": "11", "draw": "6", "lost": "7", "big": "13", "small": "11"},
     }
+    betting_distribution_payload = {
+        "code": 100,
+        "data": {
+            "tend": {"tradetend": "客队热度偏高", "compare": "竞彩与必发分歧"},
+            "qqtouzhu": {"spf": "客胜"},
+        },
+    }
+    same_odds_history_payload = {
+        "code": 100,
+        "data": {
+            "spf": {"count": "88", "winrate": "41%", "win": "36", "draw": "22", "lost": "30"},
+            "yazhi": {"count": "635", "winrate": "54%", "handi": "-0.25"},
+            "daxiao": {"count": "212", "winrate": "48%", "big": "102", "small": "110"},
+        },
+    }
+    odds_trend_payload = {
+        "code": 100,
+        "data": {
+            "euro": {"win": "2.10", "draw": "3.30", "lost": "3.40", "time": "2026-06-13 12:00:00"},
+            "yazhi": {"home": "0.92", "handi": "-0.5", "away": "0.96"},
+            "daxiao": {"big": "0.88", "handi": "2.5", "small": "1.02"},
+        },
+    }
+    bifa_trade_payload = {
+        "code": 100,
+        "data": {
+            "amount": {"total": "2800", "win": "1200", "draw": "700", "lost": "900"},
+            "trade": {"buywin": "500", "saledraw": "200"},
+        },
+    }
+    company_list_payload = {
+        "code": 100,
+        "data": {
+            "A": [{"id": "3", "companyname": "Bet365", "pyindex": "B"}],
+            "P": [{"id": "8", "companyname": "Pinnacle平博", "pyindex": "P"}],
+        },
+    }
+    odds_change_list_payload = {
+        "code": 100,
+        "data": [
+            {
+                "fid": "1282494",
+                "change": "up",
+                "total": "3",
+                "hname": "瓦萨",
+                "aname": "库奥皮奥",
+                "lname": "芬超",
+                "cname": "Bet365",
+                "win": "2.10",
+            }
+        ],
+    }
     finding = build_context_finding(
         enriched,
         detail_payload=detail_payload,
         standings_payload=standings_payload,
         extreme_payload=extreme_payload,
         tools_payload=tools_payload,
+        injury_preview_payload=injury_preview_payload,
+        lineup_simple_payload=lineup_simple_payload,
+        lineup_detail_payload=lineup_detail_payload,
+        lineup_full_payload=lineup_full_payload,
         lingsi_payload=lingsi_payload,
         vote_payload=vote_payload,
         europe_odds_history_payload=europe_history_payload,
@@ -498,6 +635,12 @@ def main() -> None:
         odds_heat_payload=heat_payload,
         handicap_europe_payload=handicap_europe_payload,
         league_stats_payload=league_stats_payload,
+        betting_distribution_payload=betting_distribution_payload,
+        same_odds_history_payload=same_odds_history_payload,
+        odds_trend_payload=odds_trend_payload,
+        bifa_trade_payload=bifa_trade_payload,
+        company_list_payload=company_list_payload,
+        odds_change_list_payload=odds_change_list_payload,
         errors=[{"key": "vote_infos", "error": "DataSourceError:sample"}],
     )
     assert finding is not None
@@ -505,18 +648,32 @@ def main() -> None:
     assert finding.agent_name == "qqsd_full_context"
     assert finding.score_delta == 0.0
     assert "综合评分 瓦萨 100 / 库奥皮奥 132" in finding.summary
+    assert "阵容伤停 伤停2条；交锋2场；完整首发3-4-1-2 vs 5-3-2" in finding.summary
     assert "投票热度 胜22% / 平31% / 负47%" in finding.summary
     assert "欧指历史2条" in finding.summary
+    assert "同赔 胜平负88场/41% / 亚盘635场/54% / 大小212场/48%" in finding.summary
+    assert "投注趋势 客队热度偏高" in finding.summary
+    assert "必发交易 2800" in finding.summary
+    assert "赔率异动1条" in finding.summary
     assert "冷热 胜43% / 平25% / 负32%" in finding.summary
     assert "让球欧赔1条(让球-1)" in finding.summary
     assert "联赛统计 24场 11胜/6平/7负" in finding.summary
     assert "可用分析工具 master精选、指数倾向" in finding.summary
     assert len(finding.payload["extremes"]) == 1
     assert finding.payload["analysis_tools"] == ["master精选", "指数倾向"]
+    assert finding.payload["match_context"]["injury_rows"] == 2
+    assert finding.payload["match_context"]["lineup_full"]["home_shape"] == "3-4-1-2"
+    assert finding.payload["injury_preview"]["xinshui"] == "主队阵容完整度略低，客队防线有隐患。"
+    assert finding.payload["lineup_detail"]["home"]["numberone"]["name"] == "核心中场"
     assert len(finding.payload["vote_infos"]) == 3
     assert finding.payload["odds_context"]["europe_history_rows"] == 2
     assert finding.payload["odds_context"]["summary_rows"] == 1
     assert finding.payload["odds_context"]["heat"]["winrate"] == "43%"
+    assert finding.payload["odds_context"]["same_odds_history"]["yazhi"]["count"] == "635"
+    assert finding.payload["odds_context"]["company_count"] == 2
+    assert finding.payload["betting_distribution"]["tend"]["tradetend"] == "客队热度偏高"
+    assert finding.payload["same_odds_history"]["spf"]["count"] == "88"
+    assert finding.payload["odds_change_list"][0]["fid"] == "1282494"
     assert finding.payload["qqsd_errors"][0]["key"] == "vote_infos"
 
     league_payload = {
@@ -623,9 +780,21 @@ def main() -> None:
             self.heat_payload = heat_payload
             self.handicap_europe_payload = handicap_europe_payload
             self.league_stats_payload = league_stats_payload
+            self.injury_preview_payload = injury_preview_payload
+            self.lineup_simple_payload = lineup_simple_payload
+            self.lineup_detail_payload = lineup_detail_payload
+            self.lineup_full_payload = lineup_full_payload
+            self.betting_distribution_payload = betting_distribution_payload
+            self.same_odds_history_payload = same_odds_history_payload
+            self.odds_trend_payload = odds_trend_payload
+            self.bifa_trade_payload = bifa_trade_payload
+            self.company_list_payload = company_list_payload
+            self.odds_change_list_payload = odds_change_list_payload
             self._extreme_data_cache = None
             self._league_list_cache = None
             self._analysis_tools_cache = None
+            self._company_list_cache = None
+            self._odds_change_list_cache = None
             self._score_list_cache = {}
             self._archive_score_cache = {}
             self.calls: list[str] = []
@@ -660,10 +829,30 @@ def main() -> None:
                 return {"code": 100, "data": []}
             if c_id == "40022":
                 return self.company_summary_payload
+            if c_id == "40025":
+                return self.injury_preview_payload
             if c_id == "40029":
                 return self.heat_payload
+            if c_id == "40030":
+                return self.betting_distribution_payload
+            if c_id == "40032":
+                return self.odds_trend_payload
+            if c_id == "40035":
+                return self.same_odds_history_payload
             if c_id == "40038":
                 return self.handicap_europe_payload
+            if c_id == "41105":
+                return self.lineup_simple_payload
+            if c_id == "41106":
+                return self.lineup_detail_payload
+            if c_id == "41107":
+                return self.bifa_trade_payload
+            if c_id == "41108":
+                return self.company_list_payload
+            if c_id == "41111":
+                return self.lineup_full_payload
+            if c_id == "41112":
+                return self.odds_change_list_payload
             if c_id == "50017":
                 return self.league_stats_payload
             return {"code": 100, "data": {"list": []}}
@@ -714,11 +903,21 @@ def main() -> None:
         assert len(window_odds) == 15
 
         bundle = client.match_analysis_bundle("1282494")
+        assert bundle["injury_preview"] == injury_preview_payload
+        assert bundle["lineup_simple"] == lineup_simple_payload
+        assert bundle["lineup_detail"] == lineup_detail_payload
+        assert bundle["lineup_full"] == lineup_full_payload
         assert bundle["europe_odds_history"] == europe_history_payload
         assert bundle["odds_summary"] == company_summary_payload
         assert bundle["odds_heat"] == heat_payload
         assert bundle["handicap_europe_odds"] == handicap_europe_payload
         assert bundle["league_stats"] == league_stats_payload
+        assert bundle["betting_distribution"] == betting_distribution_payload
+        assert bundle["same_odds_history"] == same_odds_history_payload
+        assert bundle["odds_trend"] == odds_trend_payload
+        assert bundle["bifa_trade"] == bifa_trade_payload
+        assert bundle["company_list"] == company_list_payload
+        assert bundle["odds_change_list"] == odds_change_list_payload
         assert not bundle["errors"]
         assert client.asian_odds_history(
             "1282494",
@@ -910,8 +1109,12 @@ def main() -> None:
                 assert result.inserted >= 1
                 finding = repository.get_model("findings", "qqsd:1282494:qqsd-context", AgentFinding)
                 assert finding is not None
+                assert finding.payload["match_context"]["injury_rows"] == 2
+                assert finding.payload["match_context"]["lineup_full"]["home_shape"] == "3-4-1-2"
                 assert finding.payload["odds_context"]["europe_history_rows"] == 2
                 assert finding.payload["odds_context"]["summary_rows"] == 1
+                assert finding.payload["odds_context"]["same_odds_history"]["spf"]["count"] == "88"
+                assert finding.payload["odds_context"]["odds_change_rows"] == 1
                 assert finding.payload["odds_timeline"]["markets"]["asian_handicap"]["history_availability"] in {
                     "history_available",
                     "history_empty_current_available",
@@ -922,6 +1125,18 @@ def main() -> None:
                 raw_heat = repository.get_cached_payload("qqsd", "odds_heat", "qqsd:odds_heat:1282494")
                 assert raw_heat is not None
                 assert raw_heat["data"]["winrate"] == "43%"
+                raw_injury = repository.get_cached_payload("qqsd", "injury_preview", "qqsd:40025:1282494")
+                assert raw_injury is not None
+                assert raw_injury["data"]["xinshui"] == "主队阵容完整度略低，客队防线有隐患。"
+                raw_lineup_full = repository.get_cached_payload("qqsd", "lineup_full", "qqsd:41111:1282494")
+                assert raw_lineup_full is not None
+                assert raw_lineup_full["data"]["home"]["zhenxing"] == "3-4-1-2"
+                raw_same_odds = repository.get_cached_payload("qqsd", "same_odds_history", "qqsd:same_odds_history:1282494")
+                assert raw_same_odds is not None
+                assert raw_same_odds["data"]["yazhi"]["count"] == "635"
+                raw_company_list = repository.get_cached_payload("qqsd", "company_list", "qqsd:41108:global")
+                assert raw_company_list is not None
+                assert raw_company_list["data"]["A"][0]["companyname"] == "Bet365"
             finally:
                 repository.close()
     finally:

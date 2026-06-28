@@ -5320,6 +5320,7 @@ def _execution_queue_item(
     minimum_execution_odds = approved_odds * (
         1.0 - settings.live_trading.max_execution_odds_slippage
     )
+    expires_at = match.kickoff_at - timedelta(minutes=10)
     remaining_stake_units = round(remaining_stake_units, 3)
     approved_odds = round(approved_odds, 3)
     minimum_execution_odds = round(minimum_execution_odds, 3)
@@ -5360,6 +5361,13 @@ def _execution_queue_item(
         "approved_odds": approved_odds,
         "minimum_execution_odds": minimum_execution_odds,
         "max_execution_odds_slippage": settings.live_trading.max_execution_odds_slippage,
+        "expires_at": expires_at.isoformat(),
+        "mutual_exclusion_tag": match.id,
+        "correlation_group": live_gate.get("correlation_group"),
+        "kelly_fraction": live_gate.get("kelly_fraction"),
+        "kelly_stake_units": live_gate.get("kelly_stake_units"),
+        "portfolio_adjusted": bool(live_gate.get("portfolio_adjusted")),
+        "portfolio_reason": live_gate.get("portfolio_reason"),
         "approved_stake_units": round(approved_stake_units, 3),
         "existing_real_stake_units": round(existing_real_stake_units, 3),
         "remaining_stake_units": remaining_stake_units,

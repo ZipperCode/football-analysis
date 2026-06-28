@@ -9,6 +9,8 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
+from football_analysis.kelly import BankrollSettings, KellySettings
+
 
 class StorageSettings(BaseModel):
     database_url: str = "sqlite:///./data/football_analysis.db"
@@ -50,6 +52,12 @@ class LiveTradingSettings(BaseModel):
     max_stake_units_per_pick: float = Field(default=0.5, ge=0.0)
     max_daily_stake_units: float = Field(default=1.2, ge=0.0)
     world_cup_final_window_gate_enabled: bool = False
+    # Rolling realized-CLV brake: pause a market when live execution stops beating the
+    # closing line. CLV is the strongest long-run profitability signal, so a negative
+    # rolling average is an early warning the edge has decayed.
+    rolling_clv_brake_enabled: bool = False
+    min_rolling_clv_settled_bets: int = Field(default=5, ge=1)
+    min_rolling_clv: float = 0.0
 
 
 class TierPolicySettings(BaseModel):
@@ -144,6 +152,27 @@ class BacktestSettings(BaseModel):
     default_season: str = "2526"
 
 
+class PortfolioSettings(BaseModel):
+    max_daily_exposure_fraction: float = Field(default=0.00012, ge=0.0, le=1.0)
+    correlation_penalty_same_league: float = Field(default=0.7, ge=0.0, le=1.0)
+    correlation_penalty_same_match: float = Field(default=1.0, ge=0.0, le=1.0)
+    max_correlated_stakes_per_day: int = Field(default=3, ge=1)
+
+
+class DevigSettings(BaseModel):
+    """Sharp-anchor de-vigging configuration.
+
+    Disabled by default so existing behaviour is unchanged until explicitly enabled.
+    """
+
+    enabled: bool = False
+    method: str = "power"
+    sharp_bookmaker_priority: list[str] = Field(
+        default_factory=lambda: ["Pinnacle", "Betfair Exchange", "Smarkets"]
+    )
+    min_anchor_outcomes: int = Field(default=2, ge=2)
+
+
 class StrategyProfileSettings(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -197,10 +226,14 @@ class Settings(BaseModel):
     quota: QuotaSettings = Field(default_factory=QuotaSettings)
     leagues: list[LeagueSettings] = Field(default_factory=list)
     backtest: BacktestSettings = Field(default_factory=BacktestSettings)
+    bankroll: BankrollSettings = Field(default_factory=BankrollSettings)
+    kelly: KellySettings = Field(default_factory=KellySettings)
+    portfolio: PortfolioSettings = Field(default_factory=PortfolioSettings)
     strategy_profiles: list[StrategyProfileSettings] = Field(default_factory=list)
     live_trading: LiveTradingSettings = Field(default_factory=LiveTradingSettings)
     tier_policies: dict[str, TierPolicySettings] = Field(default_factory=dict)
     thresholds: ThresholdSettings = Field(default_factory=ThresholdSettings)
+    devig: DevigSettings = Field(default_factory=DevigSettings)
     data_sources: dict[str, SourceSettings] = Field(default_factory=dict)
     execution_brokers: dict[str, ExecutionBrokerSettings] = Field(default_factory=dict)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)

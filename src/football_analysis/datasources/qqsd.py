@@ -27,6 +27,16 @@ QQSD_MATCH_DETAIL_ENDPOINT = "40006"
 QQSD_STANDINGS_ENDPOINT = "41101"
 QQSD_EXTREME_DATA_ENDPOINT = "40034"
 QQSD_ANALYSIS_TOOLS_ENDPOINT = "40046"
+QQSD_INJURY_PREVIEW_ENDPOINT = "40025"
+QQSD_BETTING_DISTRIBUTION_ENDPOINT = "40030"
+QQSD_ODDS_TREND_ENDPOINT = "40032"
+QQSD_SAME_ODDS_HISTORY_ENDPOINT = "40035"
+QQSD_LINEUP_SIMPLE_ENDPOINT = "41105"
+QQSD_LINEUP_DETAIL_ENDPOINT = "41106"
+QQSD_BIFA_TRADE_ENDPOINT = "41107"
+QQSD_COMPANY_LIST_ENDPOINT = "41108"
+QQSD_LINEUP_FULL_ENDPOINT = "41111"
+QQSD_ODDS_CHANGE_LIST_ENDPOINT = "41112"
 QQSD_EUROPE_ODDS_ENDPOINT = "40005"
 QQSD_ASIAN_HANDICAP_ENDPOINT = "40020"
 QQSD_OVER_UNDER_ENDPOINT = "40004"
@@ -80,6 +90,16 @@ QQSD_DEEP_CONTEXT_ENDPOINT_IDS = (
     QQSD_STANDINGS_ENDPOINT,
     QQSD_EXTREME_DATA_ENDPOINT,
     QQSD_ANALYSIS_TOOLS_ENDPOINT,
+    QQSD_INJURY_PREVIEW_ENDPOINT,
+    QQSD_BETTING_DISTRIBUTION_ENDPOINT,
+    QQSD_ODDS_TREND_ENDPOINT,
+    QQSD_SAME_ODDS_HISTORY_ENDPOINT,
+    QQSD_LINEUP_SIMPLE_ENDPOINT,
+    QQSD_LINEUP_DETAIL_ENDPOINT,
+    QQSD_BIFA_TRADE_ENDPOINT,
+    QQSD_COMPANY_LIST_ENDPOINT,
+    QQSD_LINEUP_FULL_ENDPOINT,
+    QQSD_ODDS_CHANGE_LIST_ENDPOINT,
     QQSD_EUROPE_ODDS_HISTORY_ENDPOINT,
     QQSD_HANDICAP_TOTALS_ODDS_HISTORY_ENDPOINT,
     QQSD_ODDS_SUMMARY_ENDPOINT,
@@ -130,6 +150,76 @@ QQSD_ENDPOINT_CATALOG: dict[str, dict[str, Any]] = {
         "params": (),
         "execution_role": "deep_context",
         "reverse_status": "runtime_verified",
+    },
+    QQSD_INJURY_PREVIEW_ENDPOINT: {
+        "name": "injury_preview",
+        "category": "match_context",
+        "params": ("fid",),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_LINEUP_SIMPLE_ENDPOINT: {
+        "name": "lineup_simple",
+        "category": "match_context",
+        "params": ("fid",),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_LINEUP_DETAIL_ENDPOINT: {
+        "name": "lineup_detail",
+        "category": "match_context",
+        "params": ("fid",),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_LINEUP_FULL_ENDPOINT: {
+        "name": "lineup_full",
+        "category": "match_context",
+        "params": ("fid",),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_BETTING_DISTRIBUTION_ENDPOINT: {
+        "name": "betting_distribution",
+        "category": "odds_context",
+        "params": ("fid",),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_SAME_ODDS_HISTORY_ENDPOINT: {
+        "name": "same_odds_history",
+        "category": "odds_context",
+        "params": ("fid", "companyid?"),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_ODDS_TREND_ENDPOINT: {
+        "name": "odds_trend",
+        "category": "odds_context",
+        "params": ("fid", "companyid?"),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_BIFA_TRADE_ENDPOINT: {
+        "name": "bifa_trade",
+        "category": "odds_context",
+        "params": ("fid",),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_COMPANY_LIST_ENDPOINT: {
+        "name": "company_list",
+        "category": "odds_metadata",
+        "params": (),
+        "execution_role": "company_mapping",
+        "reverse_status": "api_reference_verified",
+    },
+    QQSD_ODDS_CHANGE_LIST_ENDPOINT: {
+        "name": "odds_change_list",
+        "category": "odds_context",
+        "params": (),
+        "execution_role": "deep_context",
+        "reverse_status": "api_reference_verified",
     },
     QQSD_EUROPE_ODDS_ENDPOINT: {
         "name": "company_europe_odds",
@@ -260,6 +350,8 @@ class QQSDClient:
         self._extreme_data_cache: dict[str, Any] | None = None
         self._league_list_cache: dict[str, Any] | None = None
         self._analysis_tools_cache: dict[str, Any] | None = None
+        self._company_list_cache: dict[str, Any] | None = None
+        self._odds_change_list_cache: dict[str, Any] | None = None
         self._archive_score_cache: dict[tuple[str, int], dict[str, Any]] = {}
 
     def score_list(self, *, cid: str = "3", stid: str = "1") -> dict[str, Any]:
@@ -331,6 +423,46 @@ class QQSDClient:
         if self._analysis_tools_cache is None:
             self._analysis_tools_cache = self._post(c_id=QQSD_ANALYSIS_TOOLS_ENDPOINT)
         return self._analysis_tools_cache
+
+    def injury_preview(self, fid: str) -> dict[str, Any]:
+        return self._post(c_id=QQSD_INJURY_PREVIEW_ENDPOINT, body={"fid": fid})
+
+    def lineup_simple(self, fid: str) -> dict[str, Any]:
+        return self._post(c_id=QQSD_LINEUP_SIMPLE_ENDPOINT, body={"fid": fid})
+
+    def lineup_detail(self, fid: str) -> dict[str, Any]:
+        return self._post(c_id=QQSD_LINEUP_DETAIL_ENDPOINT, body={"fid": fid})
+
+    def lineup_full(self, fid: str) -> dict[str, Any]:
+        return self._post(c_id=QQSD_LINEUP_FULL_ENDPOINT, body={"fid": fid})
+
+    def betting_distribution(self, fid: str) -> dict[str, Any]:
+        return self._post(c_id=QQSD_BETTING_DISTRIBUTION_ENDPOINT, body={"fid": fid})
+
+    def same_odds_history(self, fid: str, *, company_id: str | None = None) -> dict[str, Any]:
+        body = {"fid": fid}
+        if company_id:
+            body["companyid"] = company_id
+        return self._post(c_id=QQSD_SAME_ODDS_HISTORY_ENDPOINT, body=body)
+
+    def odds_trend(self, fid: str, *, company_id: str | None = None) -> dict[str, Any]:
+        body = {"fid": fid}
+        if company_id:
+            body["companyid"] = company_id
+        return self._post(c_id=QQSD_ODDS_TREND_ENDPOINT, body=body)
+
+    def bifa_trade(self, fid: str) -> dict[str, Any]:
+        return self._post(c_id=QQSD_BIFA_TRADE_ENDPOINT, body={"fid": fid})
+
+    def company_list(self) -> dict[str, Any]:
+        if self._company_list_cache is None:
+            self._company_list_cache = self._post(c_id=QQSD_COMPANY_LIST_ENDPOINT)
+        return self._company_list_cache
+
+    def odds_change_list(self) -> dict[str, Any]:
+        if self._odds_change_list_cache is None:
+            self._odds_change_list_cache = self._post(c_id=QQSD_ODDS_CHANGE_LIST_ENDPOINT)
+        return self._odds_change_list_cache
 
     def lingsi(self, fid: str) -> dict[str, Any]:
         return self._new_api_post("home/lingsi/", body={"fid": fid})
@@ -429,6 +561,10 @@ class QQSDClient:
             "standings": None,
             "extremes": None,
             "analysis_tools": None,
+            "injury_preview": None,
+            "lineup_simple": None,
+            "lineup_detail": None,
+            "lineup_full": None,
             "lingsi": None,
             "vote_infos": None,
             "europe_odds_history": None,
@@ -436,6 +572,12 @@ class QQSDClient:
             "odds_heat": None,
             "handicap_europe_odds": None,
             "league_stats": None,
+            "betting_distribution": None,
+            "same_odds_history": None,
+            "odds_trend": None,
+            "bifa_trade": None,
+            "company_list": None,
+            "odds_change_list": None,
             "errors": [],
         }
         for key, loader in (
@@ -443,6 +585,10 @@ class QQSDClient:
             ("standings", lambda: self.standings(fid)),
             ("extremes", self.extreme_data),
             ("analysis_tools", self.analysis_tools),
+            ("injury_preview", lambda: self.injury_preview(fid)),
+            ("lineup_simple", lambda: self.lineup_simple(fid)),
+            ("lineup_detail", lambda: self.lineup_detail(fid)),
+            ("lineup_full", lambda: self.lineup_full(fid)),
             ("lingsi", lambda: self.lingsi(fid)),
             ("vote_infos", lambda: self.vote_infos(fid)),
             ("europe_odds_history", lambda: self.europe_odds_history(fid)),
@@ -450,6 +596,12 @@ class QQSDClient:
             ("odds_heat", lambda: self.odds_heat(fid)),
             ("handicap_europe_odds", lambda: self.handicap_europe_odds(fid)),
             ("league_stats", lambda: self.league_stats(fid)),
+            ("betting_distribution", lambda: self.betting_distribution(fid)),
+            ("same_odds_history", lambda: self.same_odds_history(fid)),
+            ("odds_trend", lambda: self.odds_trend(fid)),
+            ("bifa_trade", lambda: self.bifa_trade(fid)),
+            ("company_list", self.company_list),
+            ("odds_change_list", self.odds_change_list),
         ):
             try:
                 bundle[key] = loader()
@@ -764,6 +916,10 @@ def build_context_finding(
     standings_payload: dict[str, Any] | None = None,
     extreme_payload: dict[str, Any] | None = None,
     tools_payload: dict[str, Any] | None = None,
+    injury_preview_payload: dict[str, Any] | None = None,
+    lineup_simple_payload: dict[str, Any] | None = None,
+    lineup_detail_payload: dict[str, Any] | None = None,
+    lineup_full_payload: dict[str, Any] | None = None,
     lingsi_payload: dict[str, Any] | None = None,
     vote_payload: dict[str, Any] | None = None,
     europe_odds_history_payload: dict[str, Any] | None = None,
@@ -771,6 +927,12 @@ def build_context_finding(
     odds_heat_payload: dict[str, Any] | None = None,
     handicap_europe_payload: dict[str, Any] | None = None,
     league_stats_payload: dict[str, Any] | None = None,
+    betting_distribution_payload: dict[str, Any] | None = None,
+    same_odds_history_payload: dict[str, Any] | None = None,
+    odds_trend_payload: dict[str, Any] | None = None,
+    bifa_trade_payload: dict[str, Any] | None = None,
+    company_list_payload: dict[str, Any] | None = None,
+    odds_change_list_payload: dict[str, Any] | None = None,
     odds_timeline_payload: dict[str, Any] | None = None,
     errors: list[dict[str, Any]] | None = None,
 ) -> AgentFinding | None:
@@ -780,6 +942,12 @@ def build_context_finding(
         standings = {}
     extremes = _extremes_for_fid(extreme_payload, fid)
     tools = _analysis_tool_titles(tools_payload)
+    match_context = _match_context_summary(
+        injury_preview_payload=injury_preview_payload,
+        lineup_simple_payload=lineup_simple_payload,
+        lineup_detail_payload=lineup_detail_payload,
+        lineup_full_payload=lineup_full_payload,
+    )
     lingsi = (lingsi_payload or {}).get("data")
     votes = _vote_rows(vote_payload)
     odds_context = _odds_context_summary(
@@ -788,15 +956,32 @@ def build_context_finding(
         odds_heat_payload=odds_heat_payload,
         handicap_europe_payload=handicap_europe_payload,
         league_stats_payload=league_stats_payload,
+        betting_distribution_payload=betting_distribution_payload,
+        same_odds_history_payload=same_odds_history_payload,
+        odds_trend_payload=odds_trend_payload,
+        bifa_trade_payload=bifa_trade_payload,
+        company_list_payload=company_list_payload,
+        odds_change_list_payload=odds_change_list_payload,
     )
     timeline_summary = _odds_timeline_summary(odds_timeline_payload)
-    if not standings and not detail_payload and not extremes and not tools and not lingsi and not votes and not odds_context and not timeline_summary:
+    if (
+        not standings
+        and not detail_payload
+        and not extremes
+        and not tools
+        and not match_context
+        and not lingsi
+        and not votes
+        and not odds_context
+        and not timeline_summary
+    ):
         return None
     summary = _context_summary(
         match,
         standings,
         extremes,
         tools=tools,
+        match_context=match_context,
         lingsi=lingsi,
         votes=votes,
         odds_context={**odds_context, **timeline_summary},
@@ -811,6 +996,8 @@ def build_context_finding(
         evidence_sources.append(EvidenceSource(title="QQSD user vote heat", publisher="QQSD"))
     if tools or lingsi:
         evidence_sources.append(EvidenceSource(title="QQSD analysis tools", publisher="QQSD"))
+    if match_context:
+        evidence_sources.append(EvidenceSource(title="QQSD injury and lineup context", publisher="QQSD"))
     if odds_context:
         evidence_sources.append(EvidenceSource(title="QQSD odds context", publisher="QQSD"))
     if timeline_summary:
@@ -831,6 +1018,11 @@ def build_context_finding(
             "standings": standings,
             "extremes": extremes,
             "analysis_tools": tools,
+            "match_context": match_context,
+            "injury_preview": _payload_data(injury_preview_payload),
+            "lineup_simple": _payload_data(lineup_simple_payload),
+            "lineup_detail": _payload_data(lineup_detail_payload),
+            "lineup_full": _payload_data(lineup_full_payload),
             "lingsi": lingsi,
             "vote_infos": votes,
             "odds_context": odds_context,
@@ -839,6 +1031,12 @@ def build_context_finding(
             "odds_heat": _payload_data(odds_heat_payload),
             "handicap_europe_odds": _payload_data(handicap_europe_payload),
             "league_stats": _payload_data(league_stats_payload),
+            "betting_distribution": _payload_data(betting_distribution_payload),
+            "same_odds_history": _payload_data(same_odds_history_payload),
+            "odds_trend": _payload_data(odds_trend_payload),
+            "bifa_trade": _payload_data(bifa_trade_payload),
+            "company_list": _payload_data(company_list_payload),
+            "odds_change_list": _payload_data(odds_change_list_payload),
             "odds_timeline": odds_timeline_payload,
             "qqsd_errors": errors or [],
         },
@@ -1502,6 +1700,45 @@ def _payload_data(payload: dict[str, Any] | None) -> Any:
     return payload.get("data")
 
 
+def _match_context_summary(
+    *,
+    injury_preview_payload: dict[str, Any] | None = None,
+    lineup_simple_payload: dict[str, Any] | None = None,
+    lineup_detail_payload: dict[str, Any] | None = None,
+    lineup_full_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    injury_data = _payload_data(injury_preview_payload)
+    if isinstance(injury_data, dict):
+        injury_rows = _count_nested_rows(injury_data.get("shangbing"))
+        h2h_rows = _count_nested_rows(injury_data.get("match"))
+        preview = injury_data.get("xinshui")
+        if injury_rows:
+            summary["injury_rows"] = injury_rows
+        if h2h_rows:
+            summary["h2h_rows"] = h2h_rows
+        if isinstance(preview, str) and preview.strip():
+            summary["preview"] = preview.strip()[:240]
+        elif isinstance(preview, dict):
+            summary["preview"] = _compact_dict(preview, ("title", "content", "confidence", "result", "text"))
+    lineup_simple = _payload_data(lineup_simple_payload)
+    if isinstance(lineup_simple, dict):
+        lineup = _lineup_payload_summary(lineup_simple)
+        if lineup:
+            summary["lineup_simple"] = lineup
+    lineup_detail = _payload_data(lineup_detail_payload)
+    if isinstance(lineup_detail, dict):
+        lineup = _lineup_payload_summary(lineup_detail)
+        if lineup:
+            summary["lineup_detail"] = lineup
+    lineup_full = _payload_data(lineup_full_payload)
+    if isinstance(lineup_full, dict):
+        lineup = _lineup_payload_summary(lineup_full)
+        if lineup:
+            summary["lineup_full"] = lineup
+    return {key: value for key, value in summary.items() if value not in ({}, [], None, "")}
+
+
 def _odds_context_summary(
     *,
     europe_odds_history_payload: dict[str, Any] | None = None,
@@ -1509,6 +1746,12 @@ def _odds_context_summary(
     odds_heat_payload: dict[str, Any] | None = None,
     handicap_europe_payload: dict[str, Any] | None = None,
     league_stats_payload: dict[str, Any] | None = None,
+    betting_distribution_payload: dict[str, Any] | None = None,
+    same_odds_history_payload: dict[str, Any] | None = None,
+    odds_trend_payload: dict[str, Any] | None = None,
+    bifa_trade_payload: dict[str, Any] | None = None,
+    company_list_payload: dict[str, Any] | None = None,
+    odds_change_list_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     history_rows = _payload_rows(europe_odds_history_payload)
@@ -1557,6 +1800,56 @@ def _odds_context_summary(
             league_stats,
             ("total", "win", "draw", "lost", "sp", "pp", "xp", "big", "small", "bigrate", "smallrate"),
         )
+    betting_distribution = _payload_data(betting_distribution_payload)
+    if isinstance(betting_distribution, dict):
+        summary["betting_distribution"] = _compact_dict(
+            betting_distribution,
+            ("traderank", "tradetend", "compare", "tend", "qqtouzhu", "bifa", "jincai", "fenbu"),
+        )
+    same_odds = _payload_data(same_odds_history_payload)
+    if isinstance(same_odds, dict):
+        compact_same_odds: dict[str, Any] = {}
+        for market in ("spf", "yazhi", "daxiao", "corner", "half"):
+            value = same_odds.get(market)
+            if isinstance(value, dict):
+                compact_same_odds[market] = _compact_dict(
+                    value,
+                    ("count", "winrate", "win", "draw", "lost", "rate", "odds", "handi", "big", "small"),
+                )
+            elif isinstance(value, list):
+                compact_same_odds[market] = {"rows": len([row for row in value if isinstance(row, dict)])}
+        if compact_same_odds:
+            summary["same_odds_history"] = compact_same_odds
+    odds_trend = _payload_data(odds_trend_payload)
+    if isinstance(odds_trend, dict):
+        compact_trend: dict[str, Any] = {}
+        for market in ("euro", "yazhi", "daxiao"):
+            value = odds_trend.get(market)
+            if isinstance(value, dict):
+                compact_trend[market] = _compact_dict(
+                    value,
+                    ("win", "draw", "lost", "home", "away", "handi", "big", "small", "time", "w", "d", "l"),
+                )
+        if compact_trend:
+            summary["odds_trend"] = compact_trend
+    bifa_trade = _payload_data(bifa_trade_payload)
+    if isinstance(bifa_trade, dict):
+        summary["bifa_trade"] = _compact_dict(bifa_trade, ("amount", "trade", "toptrade", "total", "win", "draw", "lost"))
+    company_rows = _company_list_rows(company_list_payload)
+    if company_rows:
+        summary["company_count"] = len(company_rows)
+        first_company = _first_dict(company_rows)
+        if first_company:
+            summary["company_sample"] = _compact_dict(first_company, ("id", "companyid", "companyname", "name", "pyindex"))
+    odds_change_rows = _payload_rows(odds_change_list_payload)
+    if odds_change_rows:
+        summary["odds_change_rows"] = len(odds_change_rows)
+        latest_change = _first_dict(odds_change_rows)
+        if latest_change:
+            summary["odds_change_latest"] = _compact_dict(
+                latest_change,
+                ("fid", "change", "total", "hname", "aname", "lname", "vsdate", "cname", "win", "draw", "lost"),
+            )
     return {key: value for key, value in summary.items() if value not in ({}, [], None, "")}
 
 
@@ -1593,6 +1886,7 @@ def _context_summary(
     extremes: list[dict[str, Any]],
     *,
     tools: list[str] | None = None,
+    match_context: dict[str, Any] | None = None,
     lingsi: Any = None,
     votes: list[dict[str, Any]] | None = None,
     odds_context: dict[str, Any] | None = None,
@@ -1615,6 +1909,9 @@ def _context_summary(
         pieces.append(f"近况 {match.home_team} {home_record or '未知'}；{match.away_team} {away_record or '未知'}")
     if extremes:
         pieces.append("极限数据 " + "；".join(str(row.get("str") or row.get("content") or "") for row in extremes[:3] if row))
+    match_context_pieces = _match_context_pieces(match_context or {})
+    if match_context_pieces:
+        pieces.append("阵容伤停 " + "；".join(match_context_pieces))
     vote_summary = _vote_summary(votes or [])
     if vote_summary:
         pieces.append(f"投票热度 {vote_summary}")
@@ -1653,6 +1950,32 @@ def _odds_context_pieces(context: dict[str, Any]) -> list[str]:
     if context.get("handicap_europe_rows"):
         line = str(context.get("handicap_europe_line") or "").strip()
         pieces.append(f"让球欧赔{context['handicap_europe_rows']}条" + (f"({line})" if line else ""))
+    same_odds = context.get("same_odds_history")
+    if isinstance(same_odds, dict):
+        same_odds_bits: list[str] = []
+        for label, key in (("胜平负", "spf"), ("亚盘", "yazhi"), ("大小", "daxiao")):
+            value = same_odds.get(key)
+            if isinstance(value, dict):
+                count = str(value.get("count") or value.get("rows") or "").strip()
+                rate = str(value.get("winrate") or value.get("rate") or "").strip()
+                if count and rate:
+                    same_odds_bits.append(f"{label}{count}场/{rate}")
+                elif count:
+                    same_odds_bits.append(f"{label}{count}场")
+        if same_odds_bits:
+            pieces.append("同赔 " + " / ".join(same_odds_bits))
+    betting_distribution = context.get("betting_distribution")
+    if isinstance(betting_distribution, dict):
+        trend = _extract_nested_text(betting_distribution, ("tradetend", "tend", "compare", "traderank"))
+        if trend:
+            pieces.append(f"投注趋势 {trend}")
+    bifa_trade = context.get("bifa_trade")
+    if isinstance(bifa_trade, dict):
+        total = _extract_nested_text(bifa_trade, ("total", "amount"))
+        if total:
+            pieces.append(f"必发交易 {total}")
+    if context.get("odds_change_rows"):
+        pieces.append(f"赔率异动{context['odds_change_rows']}条")
     league_stats = context.get("league_stats")
     if isinstance(league_stats, dict):
         total = str(league_stats.get("total") or "").strip()
@@ -1662,6 +1985,122 @@ def _odds_context_pieces(context: dict[str, Any]) -> list[str]:
         if total or win or draw or lost:
             pieces.append(f"联赛统计 {total or '?'}场 {win or '?'}胜/{draw or '?'}平/{lost or '?'}负")
     return pieces
+
+
+def _match_context_pieces(context: dict[str, Any]) -> list[str]:
+    pieces: list[str] = []
+    injury_rows = int(context.get("injury_rows") or 0)
+    if injury_rows:
+        pieces.append(f"伤停{injury_rows}条")
+    h2h_rows = int(context.get("h2h_rows") or 0)
+    if h2h_rows:
+        pieces.append(f"交锋{h2h_rows}场")
+    for key, label in (("lineup_full", "完整首发"), ("lineup_detail", "阵容详情"), ("lineup_simple", "简版首发")):
+        lineup = context.get(key)
+        if not isinstance(lineup, dict):
+            continue
+        home_shape = str(lineup.get("home_shape") or "").strip()
+        away_shape = str(lineup.get("away_shape") or "").strip()
+        home_count = int(lineup.get("home_starters") or 0)
+        away_count = int(lineup.get("away_starters") or 0)
+        if home_shape or away_shape:
+            pieces.append(f"{label}{home_shape or '未知'} vs {away_shape or '未知'}")
+            break
+        if home_count or away_count:
+            pieces.append(f"{label}{home_count}/{away_count}人")
+            break
+    preview = context.get("preview")
+    if isinstance(preview, str) and preview.strip():
+        pieces.append("前瞻" + preview.strip()[:80])
+    elif isinstance(preview, dict):
+        preview_text = _extract_nested_text(preview, ("title", "content", "confidence", "result", "text"))
+        if preview_text:
+            pieces.append("前瞻" + preview_text[:80])
+    return pieces
+
+
+def _lineup_payload_summary(data: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for side, prefix in (("home", "home"), ("away", "away")):
+        team = data.get(side)
+        if not isinstance(team, dict):
+            continue
+        name = str(team.get("name") or "").strip()
+        shape = str(team.get("zhenxing") or team.get("formation") or "").strip()
+        starters = _count_nested_rows(team.get("shoufa"))
+        substitutes = _count_nested_rows(team.get("substitute"))
+        injuries = _count_nested_rows(team.get("shangbing"))
+        if name:
+            summary[f"{prefix}_name"] = name
+        if shape:
+            summary[f"{prefix}_shape"] = shape
+        if starters:
+            summary[f"{prefix}_starters"] = starters
+        if substitutes:
+            summary[f"{prefix}_substitutes"] = substitutes
+        if injuries:
+            summary[f"{prefix}_injuries"] = injuries
+        number_one = team.get("numberone")
+        if isinstance(number_one, dict):
+            summary[f"{prefix}_key_player"] = _compact_dict(number_one, ("name", "role", "goals", "shots", "passes"))
+        focus = team.get("jiaodian")
+        if isinstance(focus, dict):
+            summary[f"{prefix}_focus"] = _compact_dict(focus, ("name", "role", "content", "text"))
+    return {key: value for key, value in summary.items() if value not in ({}, [], None, "")}
+
+
+def _count_nested_rows(value: Any) -> int:
+    if isinstance(value, list):
+        count = 0
+        for item in value:
+            if isinstance(item, dict):
+                count += 1
+            else:
+                count += _count_nested_rows(item)
+        return count
+    if isinstance(value, dict):
+        direct_rows = [row for row in value.values() if isinstance(row, dict)]
+        list_rows = sum(_count_nested_rows(row) for row in value.values() if isinstance(row, list))
+        if direct_rows or list_rows:
+            return len(direct_rows) + list_rows
+    return 0
+
+
+def _extract_nested_text(value: Any, keys: tuple[str, ...]) -> str:
+    if isinstance(value, str):
+        return value.strip()[:120]
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        for key in keys:
+            child = value.get(key)
+            text = _extract_nested_text(child, keys)
+            if text:
+                return text
+    return ""
+
+
+def _company_list_rows(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    data = _payload_data(payload)
+    rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+        elif isinstance(value, dict):
+            marker = id(value)
+            if marker not in seen and any(value.get(key) not in (None, "", [], {}) for key in ("companyname", "companyid", "id", "name")):
+                seen.add(marker)
+                rows.append(value)
+                return
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    collect(child)
+
+    collect(data)
+    return rows
 
 
 def _power_score(value: Any) -> float | None:

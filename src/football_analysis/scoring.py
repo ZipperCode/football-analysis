@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from football_analysis.contracts import ScoreBreakdown
+from football_analysis.devig import DevigMethod
+from football_analysis.edge import best_soft_price, find_sharp_anchor, group_snapshots
 from football_analysis.models import AgentFinding, MarketType, Match, OddsSnapshot, Recommendation, RecommendationStatus
 from football_analysis.settings import LeagueSettings, Settings, StrategyProfileSettings, TierPolicySettings
 
@@ -18,13 +20,43 @@ class MarketEdge:
     bookmaker: str
     movement: float
     line: str | None = None
+    fair_probability: float | None = None
+    edge_method: str = "market_average"
+    anchor_bookmaker: str | None = None
+
+
+@dataclass(frozen=True)
+class QQSDEvidenceSignal:
+    value_delta: float = 0.0
+    risk_delta: float = 0.0
+    confidence_delta: float = 0.0
+    tags: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    payload: dict | None = None
 
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def _best_market_edge(odds_snapshots: list[OddsSnapshot]) -> MarketEdge | None:
+def _best_market_edge(
+    odds_snapshots: list[OddsSnapshot],
+    settings: Settings | None = None,
+) -> MarketEdge | None:
+    """Return the highest-edge market candidate.
+
+    When sharp-anchor de-vigging is enabled and an anchor is available, edge is the
+    expected value of the best soft price against the anchor's fair probability.
+    Otherwise (and as a graceful fallback) the legacy market-average ratio edge is used.
+    """
+    if settings is not None and settings.devig.enabled:
+        anchor_edge = _best_sharp_anchor_edge(odds_snapshots, settings)
+        if anchor_edge is not None:
+            return anchor_edge
+    return _best_market_average_edge(odds_snapshots)
+
+
+def _best_market_average_edge(odds_snapshots: list[OddsSnapshot]) -> MarketEdge | None:
     best: MarketEdge | None = None
     for snapshot in odds_snapshots:
         prices = snapshot.best_price or snapshot.outcome_odds
@@ -47,6 +79,74 @@ def _best_market_edge(odds_snapshots: list[OddsSnapshot]) -> MarketEdge | None:
                 bookmaker=snapshot.bookmaker,
                 movement=snapshot.movement,
                 line=snapshot.line,
+            )
+            if best is None or candidate.edge > best.edge:
+                best = candidate
+    return best
+
+
+def _best_sharp_anchor_edge(
+    odds_snapshots: list[OddsSnapshot],
+    settings: Settings,
+) -> MarketEdge | None:
+    try:
+        method = DevigMethod(settings.devig.method)
+    except ValueError:
+        method = DevigMethod.power
+    priority = settings.devig.sharp_bookmaker_priority
+
+    best: MarketEdge | None = None
+    for (_market_type, _line), group in group_snapshots(odds_snapshots).items():
+        fair_line = find_sharp_anchor(group, priority, method)
+        if fair_line is None:
+            continue
+        movement = next(
+            (s.movement for s in group if s.bookmaker == fair_line.anchor_bookmaker),
+            0.0,
+        )
+        for selection, fair_prob in fair_line.fair_probability.items():
+            if fair_prob <= 0.0:
+                continue
+            soft_price = best_soft_price(group, selection, fair_line.anchor_bookmaker)
+            if soft_price is None or soft_price <= 1.0:
+                continue
+            fair_odds = 1.0 / fair_prob
+            if _is_price_outlier(soft_price, fair_odds):
+                continue
+            edge = soft_price * fair_prob - 1.0
+            soft_source = next(
+                (
+                    s.source
+                    for s in group
+                    if s.bookmaker != fair_line.anchor_bookmaker
+                    and selection in s.outcome_odds
+                    and s.outcome_odds[selection] == soft_price
+                ),
+                fair_line.anchor_source,
+            )
+            soft_bookmaker = next(
+                (
+                    s.bookmaker
+                    for s in group
+                    if s.bookmaker != fair_line.anchor_bookmaker
+                    and selection in s.outcome_odds
+                    and s.outcome_odds[selection] == soft_price
+                ),
+                fair_line.anchor_bookmaker,
+            )
+            candidate = MarketEdge(
+                market_type=fair_line.market_type,
+                selection=selection,
+                best_price=soft_price,
+                market_average=round(fair_odds, 4),
+                edge=edge,
+                source=soft_source,
+                bookmaker=soft_bookmaker,
+                movement=movement,
+                line=fair_line.line,
+                fair_probability=round(fair_prob, 6),
+                edge_method=f"sharp_anchor_{method.value}",
+                anchor_bookmaker=fair_line.anchor_bookmaker,
             )
             if best is None or candidate.edge > best.edge:
                 best = candidate
@@ -194,6 +294,258 @@ def _bookmaker_count(odds_snapshots: list[OddsSnapshot]) -> int:
             if snapshot.bookmaker and snapshot.bookmaker.strip().lower() != "market average"
         }
     )
+
+
+def _qqsd_evidence_signal(findings: list[AgentFinding], edge: MarketEdge | None = None) -> QQSDEvidenceSignal:
+    context = _qqsd_context_payload(findings)
+    if not context:
+        return QQSDEvidenceSignal()
+    match_context = context.get("match_context")
+    odds_context = context.get("odds_context")
+    match_context = match_context if isinstance(match_context, dict) else {}
+    odds_context = odds_context if isinstance(odds_context, dict) else {}
+
+    value_delta = 0.0
+    risk_delta = 0.0
+    confidence_delta = 0.0
+    tags: list[str] = []
+    notes: list[str] = []
+
+    injury_rows = int(match_context.get("injury_rows") or 0)
+    h2h_rows = int(match_context.get("h2h_rows") or 0)
+    lineup_quality = _qqsd_lineup_quality(match_context)
+    if lineup_quality >= 2:
+        confidence_delta += 0.035
+        value_delta += 1.2
+        notes.append("QQSD阵容/首发已覆盖")
+    elif injury_rows or h2h_rows:
+        confidence_delta += 0.015
+        notes.append("QQSD伤停/交锋已覆盖")
+    else:
+        risk_delta += 2.5
+        tags.append("qqsd_lineup_injury_missing")
+
+    if injury_rows >= 3:
+        risk_delta += 2.0
+        tags.append("qqsd_injury_count_watch")
+        notes.append(f"QQSD伤停{injury_rows}条")
+
+    same_odds = odds_context.get("same_odds_history")
+    same_odds_note = _qqsd_same_odds_note(same_odds, edge)
+    if same_odds_note:
+        notes.append(same_odds_note["note"])
+        value_delta += float(same_odds_note.get("value_delta") or 0.0)
+        risk_delta += float(same_odds_note.get("risk_delta") or 0.0)
+        confidence_delta += float(same_odds_note.get("confidence_delta") or 0.0)
+        if same_odds_note.get("tag"):
+            tags.append(str(same_odds_note["tag"]))
+
+    betting_trend = _qqsd_betting_trend_text(odds_context.get("betting_distribution"))
+    if betting_trend:
+        notes.append(f"QQSD投注趋势：{betting_trend}")
+        if _selection_text_aligned(edge.selection if edge else "", betting_trend):
+            value_delta += 0.8
+            confidence_delta += 0.01
+        if any(token in betting_trend for token in ("分歧", "过热", "偏热", "异常")):
+            risk_delta += 2.5
+            tags.append("qqsd_betting_trend_watch")
+
+    bifa_total = _qqsd_bifa_total(odds_context.get("bifa_trade"))
+    if bifa_total:
+        notes.append(f"QQSD必发交易量{bifa_total:g}")
+        confidence_delta += 0.008
+
+    if odds_context.get("odds_trend"):
+        notes.append("QQSD赔率走势已覆盖")
+        confidence_delta += 0.008
+
+    odds_change_rows = int(odds_context.get("odds_change_rows") or 0)
+    if odds_change_rows:
+        notes.append(f"QQSD赔率异动{odds_change_rows}条")
+        confidence_delta += 0.006
+        if odds_change_rows >= 20:
+            risk_delta += 2.0
+            tags.append("qqsd_many_odds_changes")
+
+    company_count = int(odds_context.get("company_count") or 0)
+    if company_count >= 20:
+        notes.append(f"QQSD赔率公司映射{company_count}家")
+        confidence_delta += 0.006
+
+    payload = {
+        "value_delta": round(_clamp(value_delta, -8.0, 6.0), 3),
+        "risk_delta": round(_clamp(risk_delta, -4.0, 12.0), 3),
+        "confidence_delta": round(_clamp(confidence_delta, -0.05, 0.08), 4),
+        "lineup_quality": lineup_quality,
+        "injury_rows": injury_rows,
+        "h2h_rows": h2h_rows,
+        "odds_change_rows": odds_change_rows,
+        "company_count": company_count,
+        "notes": notes[:6],
+        "tags": sorted(set(tags)),
+    }
+    return QQSDEvidenceSignal(
+        value_delta=payload["value_delta"],
+        risk_delta=payload["risk_delta"],
+        confidence_delta=payload["confidence_delta"],
+        tags=tuple(payload["tags"]),
+        notes=tuple(payload["notes"]),
+        payload=payload,
+    )
+
+
+def _qqsd_context_payload(findings: list[AgentFinding]) -> dict:
+    for finding in findings:
+        if finding.agent_name == "qqsd_full_context" and isinstance(finding.payload, dict):
+            return finding.payload
+    return {}
+
+
+def _qqsd_lineup_quality(match_context: dict) -> int:
+    quality = 0
+    for key in ("lineup_full", "lineup_detail", "lineup_simple"):
+        lineup = match_context.get(key)
+        if not isinstance(lineup, dict):
+            continue
+        home_starters = int(lineup.get("home_starters") or 0)
+        away_starters = int(lineup.get("away_starters") or 0)
+        home_shape = bool(lineup.get("home_shape"))
+        away_shape = bool(lineup.get("away_shape"))
+        if home_starters >= 10 and away_starters >= 10:
+            quality = max(quality, 3)
+        elif home_shape and away_shape:
+            quality = max(quality, 2)
+        elif home_starters or away_starters or home_shape or away_shape:
+            quality = max(quality, 1)
+    return quality
+
+
+def _qqsd_same_odds_note(value: object, edge: MarketEdge | None) -> dict | None:
+    if not isinstance(value, dict) or edge is None:
+        return None
+    market_key = {
+        "1x2": "spf",
+        "asian_handicap": "yazhi",
+        "over_under": "daxiao",
+    }.get(edge.market_type)
+    if not market_key:
+        return None
+    row = value.get(market_key)
+    if not isinstance(row, dict):
+        return None
+    sample = _safe_int_text(row.get("count") or row.get("rows"))
+    winrate = _safe_rate_text(row.get("winrate") or row.get("rate"))
+    if sample <= 0:
+        return None
+    note = f"QQSD同赔{market_key}样本{sample}场"
+    confidence_delta = 0.012 if sample >= 80 else 0.005
+    value_delta = 0.0
+    risk_delta = 0.0
+    tag = ""
+    if winrate is not None:
+        note += f"/胜率{winrate:.0%}"
+        if sample >= 60 and winrate >= 0.54:
+            value_delta += 2.4
+            confidence_delta += 0.018
+        elif sample >= 60 and winrate <= 0.46:
+            value_delta -= 2.0
+            risk_delta += 3.5
+            tag = "qqsd_same_odds_negative"
+    return {
+        "note": note,
+        "value_delta": value_delta,
+        "risk_delta": risk_delta,
+        "confidence_delta": confidence_delta,
+        "tag": tag,
+    }
+
+
+def _qqsd_betting_trend_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()[:120]
+    if not isinstance(value, dict):
+        return ""
+    for key in ("tradetend", "tend", "compare", "traderank"):
+        text = _nested_text(value.get(key))
+        if text:
+            return text[:120]
+    return ""
+
+
+def _qqsd_bifa_total(value: object) -> float | None:
+    if not isinstance(value, dict):
+        return None
+    amount = value.get("amount")
+    if isinstance(amount, dict):
+        parsed = _safe_float_text(amount.get("total"))
+        if parsed is not None:
+            return parsed
+    return _safe_float_text(value.get("total"))
+
+
+def _nested_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        for child in value.values():
+            text = _nested_text(child)
+            if text:
+                return text
+    return ""
+
+
+def _selection_text_aligned(selection: str, text: str) -> bool:
+    if not selection or not text:
+        return False
+    upper = selection.upper()
+    if upper == "HOME":
+        return any(token in text for token in ("主", "胜", "home", "HOME"))
+    if upper == "AWAY":
+        return any(token in text for token in ("客", "负", "away", "AWAY"))
+    if upper == "DRAW":
+        return any(token in text for token in ("平", "draw", "DRAW"))
+    if upper in {"OVER", "大"}:
+        return any(token in text for token in ("大", "over", "OVER"))
+    if upper in {"UNDER", "小"}:
+        return any(token in text for token in ("小", "under", "UNDER"))
+    return False
+
+
+def _safe_int_text(value: object) -> int:
+    if value is None:
+        return 0
+    text = str(value).strip().replace(",", "")
+    try:
+        return int(float(text))
+    except ValueError:
+        return 0
+
+
+def _safe_float_text(value: object) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _safe_rate_text(value: object) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        if text.endswith("%"):
+            return float(text[:-1]) / 100.0
+        parsed = float(text)
+        return parsed / 100.0 if parsed > 1.0 else parsed
+    except ValueError:
+        return None
 
 
 def _research_advisory_signal(match: Match, findings: list[AgentFinding]) -> dict | None:
@@ -471,12 +823,14 @@ def score_match(
     league_profile_payload = _league_profile_payload(league_settings)
     bookmaker_count = _bookmaker_count(odds_snapshots)
     tier_policy = _tier_policy_for_league(league_settings, settings)
-    edge = _best_market_edge(odds_snapshots)
+    edge = _best_market_edge(odds_snapshots, settings)
     risk_tags = [tag for finding in findings for tag in finding.risk_tags]
     weighted_signal = sum(finding.score_delta * finding.confidence for finding in findings)
     average_finding_confidence = (
         sum(finding.confidence for finding in findings) / len(findings) if findings else 0.35
     )
+    qqsd_signal = _qqsd_evidence_signal(findings, edge)
+    risk_tags.extend(qqsd_signal.tags)
 
     if edge is None:
         breakdown = ScoreBreakdown(
@@ -489,6 +843,8 @@ def score_match(
         score_breakdown["league_profile"] = league_profile_payload
         score_breakdown["tier_policy"] = _tier_policy_payload(tier_policy, bookmaker_count, [])
         score_breakdown["strategy_confidence_class"] = "analysis_only"
+        if qqsd_signal.payload:
+            score_breakdown["qqsd_evidence"] = qqsd_signal.payload
         return Recommendation(
             id=f"{match.id}-analysis-v1",
             match_id=match.id,
@@ -508,14 +864,15 @@ def score_match(
     data_penalty = max(0.0, settings.thresholds.min_data_quality - match.data_completeness) * 85.0
     tag_penalty = min(32.0, len(set(risk_tags)) * 8.0)
     movement_penalty = 18.0 if abs(edge.movement) >= 0.10 else abs(edge.movement) * 90.0
-    risk_score = _clamp(18.0 + data_penalty + tag_penalty + movement_penalty, 0.0, 100.0)
+    risk_score = _clamp(18.0 + data_penalty + tag_penalty + movement_penalty + qqsd_signal.risk_delta, 0.0, 100.0)
 
-    value_score = _clamp(50.0 + edge.edge * 180.0 + weighted_signal, 0.0, 100.0)
+    value_score = _clamp(50.0 + edge.edge * 180.0 + weighted_signal + qqsd_signal.value_delta, 0.0, 100.0)
     confidence = _clamp(
         0.22
         + match.data_completeness * 0.42
         + average_finding_confidence * 0.18
         + edge.edge * 1.10
+        + qqsd_signal.confidence_delta
         - risk_score / 220.0,
         0.05,
         0.93,
@@ -598,7 +955,7 @@ def score_match(
             sum(finding.score_delta * finding.confidence for finding in findings if "news" in finding.agent_name.lower()),
             4,
         ),
-        risk_penalty=round(data_penalty + tag_penalty, 4),
+        risk_penalty=round(data_penalty + tag_penalty + qqsd_signal.risk_delta, 4),
         movement_penalty=round(movement_penalty, 4),
         final_value_score=round(value_score, 2),
         final_risk_score=round(risk_score, 2),
@@ -609,6 +966,8 @@ def score_match(
     score_breakdown["tier_policy"] = _tier_policy_payload(tier_policy, bookmaker_count, tier_policy_gates_failed)
     score_breakdown["strategy_profile"] = strategy_profile_payload
     score_breakdown["strategy_confidence_class"] = strategy_confidence_class
+    if qqsd_signal.payload:
+        score_breakdown["qqsd_evidence"] = qqsd_signal.payload
     if strategy_profile is not None:
         reason += f" 命中回测策略池：{strategy_profile.name}（{strategy_profile.stability_label}）。"
     elif status is RecommendationStatus.paper_candidate:
@@ -619,6 +978,8 @@ def score_match(
         reason += " 当前联赛或策略处于纸面观察模式，仓位置为 0，不进入今日主推。"
     elif strategy_confidence_class in {"elite_live_small_stake", "secondary_live_small_stake", "tournament_live_small_stake"}:
         reason += f" 命中分层小仓实盘门槛，最高仓位 {stake_units:.1f}u。"
+    if qqsd_signal.notes:
+        reason += " QQSD补充证据：" + "；".join(qqsd_signal.notes[:4]) + "。"
 
     recommendation = Recommendation(
         id=f"{match.id}-{edge.market_type}-{edge.selection}-v1",
@@ -638,6 +999,9 @@ def score_match(
             "bookmaker": edge.bookmaker,
             "movement": edge.movement,
             "line": edge.line,
+            "fair_probability": edge.fair_probability,
+            "edge_method": edge.edge_method,
+            "anchor_bookmaker": edge.anchor_bookmaker,
             "league_profile": league_profile_payload,
             "tier_policy": _tier_policy_payload(tier_policy, bookmaker_count, tier_policy_gates_failed),
             "strategy_profile": strategy_profile_payload,
