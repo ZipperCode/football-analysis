@@ -322,6 +322,8 @@ def _build_production_ops_check_report(
     return report
 
 
+
+
 @picks_app.command("today")
 def picks_today(as_json: bool = typer.Option(False, "--json", help="Emit JSON for Hermes/tools.")) -> None:
     result = get_service().picks_today()
@@ -2766,6 +2768,27 @@ def ingest_historical_odds(
         snapshot_time=snapshot_time,
         source=source,
         max_events=max_events,
+    )
+    if as_json:
+        _print_json(result)
+        return
+    console.print(result.model_dump())
+
+@ingest_app.command("intelligence")
+def ingest_intelligence(
+    source: str = typer.Option("dongqiudi", "--source"),
+    match_id: str | None = typer.Option(None, "--match-id", help="Internal match id. Defaults to all matches with source ids."),
+    include_team_feeds: bool = typer.Option(True, "--team-feeds/--no-team-feeds", help="Fetch team news feeds when team ids are known."),
+    article_detail_limit: int = typer.Option(3, "--article-detail-limit", min=0, help="Maximum article details to fetch per team feed."),
+    max_matches: int | None = typer.Option(None, "--max-matches", help="Limit scanned matches."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    result = get_service().ingestion.ingest_intelligence(
+        source=source,
+        match_id=match_id,
+        include_team_feeds=include_team_feeds,
+        article_detail_limit=article_detail_limit,
+        max_matches=max_matches,
     )
     if as_json:
         _print_json(result)

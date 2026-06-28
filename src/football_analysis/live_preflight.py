@@ -73,7 +73,7 @@ def _preflight_decision(
     if live_audit.status == "paused":
         return "paused", "do_not_bet_loss_pause", issues
     if live_audit.status == "ready":
-        return "ready", "place_approved_live_bets", []
+        return "ready", "manual_place_approved_queue", []
     if live_audit.status == "no_matches":
         return "no_matches", "wait_for_fixtures", issues
     if odds_readiness.status == "insufficient" or _requires_odds_refresh(odds_readiness):

@@ -28,6 +28,7 @@ class LiveAuditItem(AppModel):
     stake_units: float
     live_gate_passed: bool
     gates_failed: list[str] = Field(default_factory=list)
+    odds_basis: dict = Field(default_factory=dict)
     reason: str
 
 
@@ -130,6 +131,7 @@ def _audit_item(recommendation, match: Match) -> LiveAuditItem:
         stake_units=recommendation.stake_units,
         live_gate_passed=bool(live_gate.get("passed")),
         gates_failed=list(live_gate.get("gates_failed", [])),
+        odds_basis=recommendation.odds_basis,
         reason=recommendation.reason,
     )
 

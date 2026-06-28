@@ -41,6 +41,10 @@ quota:
       requests_per_minute: 30
     football_data_uk:
       requests_per_day: 200
+    leisu:
+      requests_per_minute: 6
+    dongqiudi:
+      requests_per_minute: 12
 
 leagues:
   - code: EPL
@@ -130,10 +134,10 @@ leagues:
       - World - UEFA Champions League
     tier: major_tournament
     analysis_depth: deep
-    strategy_mode: paper
+    strategy_mode: live
     min_bookmakers: 2
     max_events: 20
-    paper_only: true
+    paper_only: false
   - code: WORLD_CUP
     name: FIFA World Cup
     country: World
@@ -161,10 +165,10 @@ leagues:
       - World - Euro Championship
     tier: major_tournament
     analysis_depth: deep
-    strategy_mode: paper
+    strategy_mode: live
     min_bookmakers: 2
     max_events: 20
-    paper_only: true
+    paper_only: false
   - code: COPA_AMERICA
     name: Copa America
     country: World
@@ -174,10 +178,10 @@ leagues:
       - World - Copa America
     tier: major_tournament
     analysis_depth: deep
-    strategy_mode: paper
+    strategy_mode: live
     min_bookmakers: 2
     max_events: 20
-    paper_only: true
+    paper_only: false
   - code: J1
     name: J1 League
     country: Japan
@@ -446,6 +450,8 @@ live_trading:
   max_risk_score: 42.0
   min_confidence: 0.58
   min_edge: 0.025
+  min_recommendation_odds: 1.20
+  max_recommendation_odds: 3.25
   min_long_horizon_bets: 150
   min_long_horizon_roi: 0.08
   min_holdout_bets: 80
@@ -708,6 +714,16 @@ data_sources:
     base_url: https://i.qqshidao.com
     api_key_env: QQSD_C_CK
     free_tier_note: "补充赛事/比分/赔率缺口；QQSD_C_CK is the c_ck token. Some endpoints may allow empty c_ck only when QQSD_ALLOW_EMPTY_C_CK=1 is explicitly set."
+  leisu:
+    name: Leisu Sports experimental reverse-engineered read-only source
+    enabled: false
+    base_url: https://app-gateway.kantai8.com
+    free_tier_note: "Experimental only; keep disabled until sync-config and read-only football probes pass."
+  dongqiudi:
+    name: Dongqiudi public read-only football source
+    enabled: true
+    base_url: https://api.dongqiudi.com
+    free_tier_note: "Public unsigned endpoints; default evidence source for schedule, lineup, match analysis, situation, and team news."
 
 execution_brokers:
   betfair_exchange:

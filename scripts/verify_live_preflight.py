@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -42,12 +43,12 @@ def main() -> None:
             assert default_scope.odds_readiness.scoped_matches == 0, "odds readiness must exclude past kickoff matches"
 
             report = run_live_preflight(repository, settings, include_past=True)
-            assert report.status == "ready", "qualified live candidate should make preflight ready"
-            assert report.ready_to_bet is True, "ready preflight must explicitly approve betting"
-            assert report.action == "place_approved_live_bets", "ready action must be operational"
-            assert report.live_audit.recommended_count == 1, "preflight must include live audit counts"
-            assert report.odds_readiness.ready_profiles == 1, "preflight must include odds readiness counts"
-            assert not report.issues, "ready preflight should not expose blocking issues"
+            assert report.status == "ready"
+            assert report.ready_to_bet is True
+            assert report.action == "manual_place_approved_queue"
+            assert report.live_audit.recommended_count == 1
+            assert report.odds_readiness.ready_profiles == 1
+            assert not report.issues
 
             for index in range(3):
                 repository.upsert_model(
@@ -68,8 +69,8 @@ def main() -> None:
                 )
 
             paused = run_live_preflight(repository, settings, include_past=True)
-            assert paused.status == "paused", "loss streak should pause preflight"
-            assert paused.ready_to_bet is False, "paused preflight must not approve betting"
+            assert paused.status == "paused"
+            assert paused.ready_to_bet is False
             assert paused.action == "do_not_bet_loss_pause"
             assert "live:live_recent_consecutive_losses:3/3" in paused.issues
             assert "live_recent_consecutive_losses:3/3" in paused.live_audit.issues
@@ -96,8 +97,8 @@ def main() -> None:
                 "approved live-gate candidates must not be blocked by unrelated active-profile odds gaps"
             )
             assert secondary_ready.ready_to_bet is True
-            assert secondary_ready.action == "place_approved_live_bets"
-            assert not secondary_ready.issues, "ready preflight should not expose unrelated profile gaps as blockers"
+            assert secondary_ready.action == "manual_place_approved_queue"
+            assert not secondary_ready.issues
         finally:
             repository.close()
 
@@ -124,7 +125,7 @@ def main() -> None:
             assert scoped.live_audit.total_matches == 1
             assert scoped.status == "ready"
             assert scoped.ready_to_bet is True
-            assert scoped.action == "place_approved_live_bets"
+            assert scoped.action == "manual_place_approved_queue"
             assert not scoped.issues
         finally:
             repository.close()
@@ -146,11 +147,9 @@ def main() -> None:
                 collected_at=datetime.now(timezone.utc) - timedelta(minutes=240),
             )
             stale = run_live_preflight(repository, settings, include_past=True)
-            assert stale.status == "blocked", "stale profile odds must block production preflight"
-            assert stale.odds_readiness.ready_profiles == 0, "stale odds must not count as a ready profile"
-            assert stale.odds_readiness.refresh_requirements, (
-                "blocked profile odds must expose an actionable refresh requirement"
-            )
+            assert stale.status == "blocked"
+            assert stale.odds_readiness.ready_profiles == 0
+            assert stale.odds_readiness.refresh_requirements
             requirement = stale.odds_readiness.refresh_requirements[0]
             assert requirement.profile_id == "i1_middle_ah_away_live_long_horizon"
             assert requirement.refresh_league_code == "SERIE_A"
@@ -172,26 +171,20 @@ def main() -> None:
     with TemporaryDirectory() as tmp:
         env = os.environ.copy()
         env["DATABASE_URL"] = f"sqlite:///{Path(tmp) / 'cli.db'}"
-        subprocess.check_output(["footballctl", "db", "init", "--json"], env=env, text=True, encoding="utf-8")
+        footballctl = [sys.executable, "-m", "football_analysis.cli"]
+        subprocess.check_output([*footballctl, "db", "init", "--json"], env=env, text=True, encoding="utf-8")
         completed = subprocess.run(
-            ["footballctl", "live-preflight", "--json"],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=env,
+            [*footballctl, "live-preflight", "--json"], check=True, capture_output=True, text=True, encoding="utf-8", env=env
         )
         payload = json.loads(completed.stdout)
-        assert "odds_readiness" in payload, "CLI preflight JSON must include odds readiness"
-        assert "live_audit" in payload, "CLI preflight JSON must include live audit"
-        assert payload["ready_to_bet"] is False, "empty CLI DB must not approve betting"
+        assert {"odds_readiness", "live_audit"}.issubset(payload)
+        assert payload["ready_to_bet"] is False
 
         os.environ["DATABASE_URL"] = f"sqlite:///{Path(tmp) / 'api.db'}"
         client = TestClient(app)
         assert client.get("/live/preflight").status_code == 200
         api_payload = client.get("/live/preflight").json()
-        assert "odds_readiness" in api_payload, "API preflight JSON must include odds readiness"
-        assert "live_audit" in api_payload, "API preflight JSON must include live audit"
+        assert {"odds_readiness", "live_audit"}.issubset(api_payload)
 
     print("live preflight verification passed")
 

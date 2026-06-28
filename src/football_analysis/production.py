@@ -92,6 +92,17 @@ class TelegramAlertResult(AppModel):
     skipped_reason: str | None = None
     error: str | None = None
 
+class ProductionStatusReport(AppModel):
+    checked_at: datetime = Field(default_factory=datetime.utcnow)
+    overall_status: str
+    ready_to_bet: bool
+    action: str
+    decision: dict[str, Any] = Field(default_factory=dict)
+    counts: dict[str, int] = Field(default_factory=dict)
+    recent_jobs: list[dict[str, Any]] = Field(default_factory=list)
+    providers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    issues: list[str] = Field(default_factory=list)
+
 
 DecisionRunner = Callable[..., Any]
 DailyOpsRunner = Callable[[AnalysisService, date], Any]

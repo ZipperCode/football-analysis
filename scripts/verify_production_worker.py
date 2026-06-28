@@ -1143,32 +1143,35 @@ def test_telegram_alert_posts_send_message_payload() -> None:
 
 def test_cli_telegram_notification_result_is_json() -> None:
     worker_env = os.environ.copy()
-    worker_env.update(
-        {
-            "WORKER_ONCE": "1",
-            "WORKER_JSON": "1",
-            "WORKER_NOTIFY_TELEGRAM": "1",
-            "WORKER_REFRESH_DRY_RUN": "1",
-            "WORKER_INCLUDE_RESULTS": "0",
-            "WORKER_INCLUDE_DAILY_OPS": "0",
-            "WORKER_EXECUTION_MODE": "off",
-            "WORKER_DATA_APPLY_MODE": "dry-run",
-            "WORKER_BROKER_DISCOVERY_MODE": "off",
-            "WORKER_BROKER_EXECUTION_MODE": "off",
-            "WORKER_REQUIRE_DEPLOY_READY": "0",
-        }
-    )
-    output = subprocess.check_output(
-        [
-            "footballctl",
-            "production-worker-env",
-            "--once",
-            "--notify-telegram",
-        ],
-        text=True,
-        encoding="utf-8",
-        env=worker_env,
-    )
+    with TemporaryDirectory() as tmp:
+        worker_env.update(
+            {
+                "DATABASE_URL": f"sqlite:///{Path(tmp) / 'telegram-worker.db'}",
+                "WORKER_ONCE": "1",
+                "WORKER_JSON": "1",
+                "WORKER_NOTIFY_TELEGRAM": "1",
+                "WORKER_AUTO_REFRESH": "0",
+                "WORKER_REFRESH_DRY_RUN": "1",
+                "WORKER_INCLUDE_RESULTS": "0",
+                "WORKER_INCLUDE_DAILY_OPS": "0",
+                "WORKER_EXECUTION_MODE": "off",
+                "WORKER_DATA_APPLY_MODE": "dry-run",
+                "WORKER_BROKER_DISCOVERY_MODE": "off",
+                "WORKER_BROKER_EXECUTION_MODE": "off",
+                "WORKER_REQUIRE_DEPLOY_READY": "0",
+            }
+        )
+        output = subprocess.check_output(
+            [
+                "footballctl",
+                "production-worker-env",
+                "--once",
+                "--notify-telegram",
+            ],
+            text=True,
+            encoding="utf-8",
+            env=worker_env,
+        )
 
     last_line = [line for line in output.splitlines() if line.strip()][-1]
     payload = json.loads(last_line)

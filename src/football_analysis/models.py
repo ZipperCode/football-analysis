@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class MarketType(str, Enum):
@@ -104,6 +104,13 @@ class Recommendation(AppModel):
     risk_notice: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
     version: str = "v1"
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_legacy_status(cls, value: Any) -> Any:
+        if value == "advisory_recommended":
+            return RecommendationStatus.paper_candidate
+        return value
 
 
 

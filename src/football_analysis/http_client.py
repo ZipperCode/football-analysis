@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from functools import lru_cache
+from ssl import SSLContext
 from typing import Any
 
 import httpx
+import truststore
 
 from football_analysis.cache import make_request_key, quota_limits, quota_window_keys, sanitize_mapping, ttl_for_endpoint
 from football_analysis.contracts import SourceResponse
@@ -115,7 +118,7 @@ class ProviderHttpClient:
         for attempt in range(attempts):
             started = time.perf_counter()
             try:
-                with httpx.Client(timeout=self.settings.ingestion.request_timeout_seconds) as client:
+                with httpx.Client(timeout=self.settings.ingestion.request_timeout_seconds, verify=_ssl_context()) as client:
                     response = client.get(url, headers=headers, params=params)
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 payload: Any = response.json() if response_kind == "json" else response.text
@@ -169,3 +172,8 @@ class ProviderHttpClient:
                 raise QuotaExceeded(f"quota_exceeded:{provider}:{scope}:{current}/{limit}")
         for scope in limits:
             self.repository.increment_quota(provider, windows[scope])
+
+
+@lru_cache(maxsize=1)
+def _ssl_context() -> SSLContext:
+    return truststore.SSLContext()

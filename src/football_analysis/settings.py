@@ -33,6 +33,8 @@ class LiveTradingSettings(BaseModel):
     max_risk_score: float = Field(default=42.0, ge=0.0, le=100.0)
     min_confidence: float = Field(default=0.58, ge=0.0, le=1.0)
     min_edge: float = Field(default=0.025, ge=0.0)
+    min_recommendation_odds: float = Field(default=1.20, ge=1.0)
+    max_recommendation_odds: float = Field(default=3.25, ge=1.0)
     min_long_horizon_bets: int = Field(default=150, ge=1)
     min_long_horizon_roi: float = 0.08
     min_holdout_bets: int = Field(default=80, ge=1)

@@ -49,14 +49,21 @@ def _best_market_edge(
     expected value of the best soft price against the anchor's fair probability.
     Otherwise (and as a graceful fallback) the legacy market-average ratio edge is used.
     """
+    min_odds = settings.live_trading.min_recommendation_odds if settings is not None else 1.0
+    max_odds = settings.live_trading.max_recommendation_odds if settings is not None else float("inf")
     if settings is not None and settings.devig.enabled:
         anchor_edge = _best_sharp_anchor_edge(odds_snapshots, settings)
         if anchor_edge is not None:
             return anchor_edge
-    return _best_market_average_edge(odds_snapshots)
+    return _best_market_average_edge(odds_snapshots, min_odds=min_odds, max_odds=max_odds)
 
 
-def _best_market_average_edge(odds_snapshots: list[OddsSnapshot]) -> MarketEdge | None:
+def _best_market_average_edge(
+    odds_snapshots: list[OddsSnapshot],
+    *,
+    min_odds: float = 1.0,
+    max_odds: float = float("inf"),
+) -> MarketEdge | None:
     best: MarketEdge | None = None
     for snapshot in odds_snapshots:
         prices = snapshot.best_price or snapshot.outcome_odds
@@ -64,9 +71,11 @@ def _best_market_average_edge(odds_snapshots: list[OddsSnapshot]) -> MarketEdge 
             average = snapshot.market_average.get(selection)
             if not average or average <= 1.0 or price <= 1.0:
                 continue
+            if price < min_odds or price > max_odds or average < min_odds or average > max_odds:
+                continue
             if _is_price_outlier(price, average):
                 price = snapshot.outcome_odds.get(selection, 0.0)
-                if price <= 1.0 or _is_price_outlier(price, average):
+                if price <= 1.0 or price < min_odds or price > max_odds or _is_price_outlier(price, average):
                     continue
             edge = (price / average) - 1.0
             candidate = MarketEdge(
@@ -94,6 +103,8 @@ def _best_sharp_anchor_edge(
     except ValueError:
         method = DevigMethod.power
     priority = settings.devig.sharp_bookmaker_priority
+    min_odds = settings.live_trading.min_recommendation_odds
+    max_odds = settings.live_trading.max_recommendation_odds
 
     best: MarketEdge | None = None
     for (_market_type, _line), group in group_snapshots(odds_snapshots).items():
@@ -108,9 +119,11 @@ def _best_sharp_anchor_edge(
             if fair_prob <= 0.0:
                 continue
             soft_price = best_soft_price(group, selection, fair_line.anchor_bookmaker)
-            if soft_price is None or soft_price <= 1.0:
+            if soft_price is None or soft_price <= 1.0 or soft_price < min_odds or soft_price > max_odds:
                 continue
             fair_odds = 1.0 / fair_prob
+            if fair_odds < min_odds or fair_odds > max_odds:
+                continue
             if _is_price_outlier(soft_price, fair_odds):
                 continue
             edge = soft_price * fair_prob - 1.0
