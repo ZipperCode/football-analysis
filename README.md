@@ -239,35 +239,103 @@ python scripts/verify_datasources.py --remote
 
 ## Agent / MCP 调用
 
-项目提供 stdio MCP server，供 Codex、Claude Desktop 或其他支持 MCP 的 agent 调用当前生产库和分析流水线：
+项目提供 stdio MCP server，供 Codex、Claude Desktop、Hermes 或其他支持 MCP 的 agent 调用当前生产库和分析流水线。
+
+### 接入 Hermes（NousResearch hermes-agent）
+
+架构：**本后端是薄工具层，Hermes 是大脑**。后端通过 MCP 暴露分析/复盘工具，Hermes 侧用 blueprint skill 做 cron 编排、解释、推送、复盘决策。后端不自动下单、不自动改策略配置。完整闭环契约见 `docs/hermes.md`。
+
+按以下三步接入（命令在 Hermes 主机执行；跨机部署时最简单是让 Hermes 与后端跑在同一台机器）。
+
+#### 第 1 步：注册 MCP server
+
+先确认后端已安装、命令可用：
+
+```bash
+cd /home/zipper/Projects/football-analysis
+python -m pip install -e .
+football-analysis-mcp   # 能启动（stdio 挂起不退出）即 OK，Ctrl-C 退出
+```
+
+在 Hermes 主机注册：
+
+```bash
+hermes mcp add football-analysis --command "football-analysis-mcp"
+```
+
+#### 第 2 步：配置环境变量
+
+MCP server 运行时依赖以下环境变量。写入 Hermes 的 `~/.hermes/.env`（不要写真实值到 skill 文件里）：
+
+```bash
+FOOTBALL_CONFIG=/home/zipper/Projects/football-analysis/config/default.yaml
+DATABASE_URL=sqlite:////home/zipper/Projects/football-analysis/data/football_analysis.db
+FOOTBALL_AI_KEY=<你的 OpenAI 兼容 LLM key>
+API_FOOTBALL_KEY=<...>
+ODDS_API_IO_KEY=<...>
+# Telegram 推送（可选，配置后 blueprint 才能发消息）
+TELEGRAM_BOT_TOKEN=<...>
+TELEGRAM_CHAT_ID=<...>
+```
+
+- `FOOTBALL_CONFIG`：配置文件路径，默认 `config/default.yaml`
+- `DATABASE_URL`：默认本地 SQLite；Docker Compose 生产栈用 `postgresql+psycopg://football:<POSTGRES_PASSWORD>@127.0.0.1:5432/football_analysis`
+- `FOOTBALL_AI_KEY`：AI 概率分析层凭证
+- 其余数据源/推送变量的完整清单见 `docs/hermes.md` 第 3 节
+
+验证工具已挂上：进入 Hermes 会话执行 `/suggestions` 或 `hermes cron`，能看到 `football-analysis` 的工具（`get_analysis`、`evaluate_ai_quality`、`review_strategies` 等）即接入成功。
+
+#### 第 3 步：安装 blueprint skill 并启用定时
+
+把两个示例 skill 复制到 Hermes skills 目录：
+
+```bash
+cp -r /home/zipper/Projects/football-analysis/docs/hermes-skills/football-daily-picks ~/.hermes/skills/
+cp -r /home/zipper/Projects/football-analysis/docs/hermes-skills/football-review-loop ~/.hermes/skills/
+```
+
+- `football-daily-picks`：每天 18:00 调 `get_analysis(refresh=true)` 生成推荐并推送 Telegram。
+- `football-review-loop`：每天 10:00 依次调 `evaluate_finished_matches` → `evaluate_ai_quality` → `review_strategies` 做赛后复盘与策略评估；策略调整建议需人工确认后方可执行。
+
+**blueprint 装进去不会自动跑**。必须进入 Hermes 的 `/suggestions`，对每个 skill 执行一次 `/suggestions accept <序号>`，才会真正创建 cron。想改触发时点，直接改对应 `SKILL.md` 里 `metadata.hermes.blueprint.schedule` 的 cron 表达式，再重新 `accept`。
+
+#### 接入后的闭环
+
+```
+每天 18:00  →  get_analysis(refresh=true)     →  拉数据 + AI 分析 → 推荐推送 Telegram
+次日 10:00  →  evaluate_finished_matches      →  已完赛命中率 / ROI
+            →  evaluate_ai_quality            →  AI vs 市场 Brier 对比
+            →  review_strategies              →  各 profile ROI/CLV 与调整建议（仅建议，人工确认）
+```
+
+后端不自动下单、不自动改 `config/default.yaml`；策略调整建议只作为消息呈现，由人拍板。完整 MCP 工具契约、cron 映射与安全边界详见 `docs/hermes.md`。
+
+### 每日推荐与 AI 质量复盘
+
+当 Agent/MCP 不可用时，可直接用 CLI 作为 fallback：
 
 ```powershell
-football-analysis-mcp
+footballctl picks today --json
+footballctl ai-eval --date YYYY-MM-DD --json
+footballctl evaluate-finished --date YYYY-MM-DD --league WORLD_CUP --json
+footballctl evaluate-finished --date YYYY-MM-DD --league WORLD_CUP --result "Home vs Away=2-1" --json
 ```
 
-典型 MCP 配置：
+`picks today` 生成当日评分和 recommendations。
+`ai-eval` 对指定日期的已完赛推荐做 Brier score 复盘，比较 AI 概率与市场隐含概率。
+`evaluate-finished` 只统计 `recommended` 样本；`analysis_only` / `paper_candidate` / `rejected` 会进入 `excluded_by_reason`，避免把未给出的建议算进成功率。
 
-```json
-{
-  "mcpServers": {
-    "football-analysis": {
-      "command": "football-analysis-mcp",
-      "cwd": "D:\\Project\\GitHub\\football-analysis",
-      "env": {
-        "FOOTBALL_CONFIG": "config/default.yaml",
-        "DATABASE_URL": "postgresql+psycopg://football:<POSTGRES_PASSWORD>@127.0.0.1:5432/football_analysis"
-      }
-    }
-  }
-}
-```
+### MCP 暴露的工具
 
 MCP 默认只暴露分析和数据工具，不暴露真实 broker 下单：
 
 - `production_status`：读取生产状态，不调用远程 provider。
 - `production_health`：读取 worker/ingestion heartbeat 健康状态。
 - `get_picks_today`：评分今日本地比赛并保存 recommendations。
+- `get_analysis`：统一高层入口，可选刷新后返回带 AI 概率的推荐；详见 `docs/hermes.md`。
 - `evaluate_finished_matches`：按当前策略复盘已完赛比赛，只统计指定 recommendation status，返回命中率、ROI 和排除原因；不下单。
+- `evaluate_ai_quality`：AI 准度校验，返回 Brier score（AI vs 市场）、命中率、brier_improvement；详见 `docs/hermes.md`。
+- `review_strategies`：策略评估，返回各 profile 的 ROI/CLV 与建议动作（pause_live / demote_to_paper / 保持）；详见 `docs/hermes.md`。
 - `get_live_decision`：读取 reproducible go/no-go 决策快照。
 - `get_odds_readiness`：审计当前赔率覆盖。
 - `refresh_live_data`：刷新 fixtures/odds；`dry_run=true` 时不消耗远程配额。
@@ -275,15 +343,6 @@ MCP 默认只暴露分析和数据工具，不暴露真实 broker 下单：
 - `push_analysis_report`：格式化并推送今日分析建议到 Telegram；`dry_run=true` 只返回文本。
 
 Agent 默认先调 `production_health` 和 `production_status`；需要新数据时再调 `refresh_live_data` 或 `run_analysis_cycle`；需要复盘命中率调 `evaluate_finished_matches`；需要发给人的结果调 `push_analysis_report`。真实下单、Betfair、broker order placement 不通过 MCP 暴露。
-
-CLI 复盘入口：
-
-```powershell
-footballctl evaluate-finished --date YYYY-MM-DD --league WORLD_CUP --json
-footballctl evaluate-finished --date YYYY-MM-DD --league WORLD_CUP --result "Home vs Away=2-1" --json
-```
-
-默认只结算 `recommended` 样本；`analysis_only` / `paper_candidate` / `rejected` 会进入 `excluded_by_reason`，避免把未给出的建议算进成功率。
 
 生产自动推送分析建议继续用 worker：
 

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import os
+from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from football_analysis.ai_eval import evaluate_ai_quality as build_ai_quality_evaluation
 from football_analysis.evaluation import evaluate_finished_matches as build_finished_evaluation
 from football_analysis.live_decision import run_live_decision as build_live_decision
 from football_analysis.live_refresh import run_live_refresh
+from football_analysis.live_review import run_live_review as build_live_review
 from football_analysis.odds_readiness import audit_odds_readiness
 from football_analysis.production import (
     build_analysis_advice_report,
@@ -89,6 +92,30 @@ def get_picks_today(limit: int = 5) -> dict[str, Any]:
     report = build_analysis_advice_report(service, limit=limit)
     return _dump(report)
 
+@mcp.tool()
+def get_analysis(hours: int = 24, limit: int = 8, refresh: bool = False) -> dict[str, Any]:
+    """Return analysis advice, optionally refreshing fixtures and odds first."""
+    service = get_service()
+    if not refresh:
+        return _dump(build_analysis_advice_report(service, limit=limit, hours=hours))
+
+    refresh_result = run_live_refresh(
+        service,
+        date=date.today().isoformat(),
+        fixture_source="auto",
+        odds_source="auto",
+        scope="active-profiles",
+        include_past=False,
+        dry_run=False,
+        allow_odds_fallback=False,
+    )
+    report = build_analysis_advice_report(service, limit=limit, hours=hours)
+    return {
+        "status": "refreshed",
+        "refresh": _dump(refresh_result),
+        "report": _dump(report),
+    }
+
 
 @mcp.tool()
 def evaluate_finished_matches(
@@ -108,6 +135,22 @@ def evaluate_finished_matches(
         result_overrides=result_overrides or [],
         save_results=save_results,
     )
+    return _dump(report)
+
+
+@mcp.tool()
+def evaluate_ai_quality(date_text: str, league: str | None = None) -> dict[str, Any]:
+    """Evaluate AI signal quality for finished matches on a local date."""
+    service = get_service()
+    report = build_ai_quality_evaluation(service, target_date=date.fromisoformat(date_text), league=league)
+    return _dump(asdict(report) if is_dataclass(report) else report)
+
+
+@mcp.tool()
+def review_strategies() -> dict[str, Any]:
+    """Review settled live strategy evidence and return operator guidance only."""
+    service = get_service()
+    report = build_live_review(service.repository, service.settings)
     return _dump(report)
 
 

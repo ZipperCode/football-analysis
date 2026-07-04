@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -10,6 +11,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from football_analysis.ai_eval import evaluate_ai_quality
 from football_analysis.evaluation import evaluate_finished_matches
 from football_analysis.models import BetLog, Match, RecommendationStatus
 from football_analysis.research import match_league_filter, research_and_store_match
@@ -2674,6 +2676,55 @@ def evaluate_finished(
             "hit_rate": report.hit_rate,
             "roi_units": report.roi_units,
             "excluded_by_reason": report.excluded_by_reason,
+        }
+    )
+
+
+@app.command("ai-eval")
+def ai_eval(
+    target_date: str | None = typer.Option(None, "--date", help="Local match date in YYYY-MM-DD. Defaults to today."),
+    league: str | None = typer.Option(None, "--league", help="Configured league code, e.g. EPL."),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON for tools."),
+) -> None:
+    service = get_service()
+    local_date = date.fromisoformat(target_date) if target_date else datetime.now(service.settings.app.tzinfo).date()
+    report = evaluate_ai_quality(service, target_date=local_date, league=league)
+    if as_json:
+        _print_json(asdict(report))
+        return
+
+    title = (
+        f"AI quality: {report.date} signals={report.signal_count} "
+        f"ai_brier={report.ai_brier} market_brier={report.market_brier} "
+        f"improvement={report.brier_improvement}"
+    )
+    table = Table(title=title)
+    table.add_column("Match")
+    table.add_column("Score")
+    table.add_column("Selection")
+    table.add_column("AI prob")
+    table.add_column("Mkt prob")
+    table.add_column("Outcome")
+    table.add_column("AI Brier")
+    for row in report.rows:
+        table.add_row(
+            f"{row.home_team} vs {row.away_team}",
+            row.final_score,
+            f"{row.selection_label}({row.market_type})",
+            f"{row.ai_probability:.2f}",
+            f"{row.market_probability:.2f}",
+            f"{row.outcome:.2f}",
+            f"{row.ai_brier:.3f}",
+        )
+    console.print(table)
+    console.print(
+        {
+            "signal_count": report.signal_count,
+            "ai_brier": report.ai_brier,
+            "market_brier": report.market_brier,
+            "brier_improvement": report.brier_improvement,
+            "ai_hit_rate": report.ai_hit_rate,
+            "market_hit_rate": report.market_hit_rate,
         }
     )
 

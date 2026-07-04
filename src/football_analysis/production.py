@@ -793,6 +793,7 @@ def _analysis_advice_item(
             recommendation.score_breakdown.get("strategy_confidence_class")
             or recommendation.odds_basis.get("strategy_confidence_class")
         ),
+        "ai_analysis": recommendation.score_breakdown.get("ai_analysis") or {},
         "research_advisory": research_advisory,
         "evidence_sources": evidence_sources,
         "risk_tags": list(recommendation.risk_tags),

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from football_analysis.ai_analysis import AISignal, selection_label
 from football_analysis.contracts import ScoreBreakdown
 from football_analysis.devig import DevigMethod
 from football_analysis.edge import best_soft_price, find_sharp_anchor, group_snapshots
 from football_analysis.models import AgentFinding, MarketType, Match, OddsSnapshot, Recommendation, RecommendationStatus
-from football_analysis.settings import LeagueSettings, Settings, StrategyProfileSettings, TierPolicySettings
+from football_analysis.settings import AISettings, LeagueSettings, Settings, StrategyProfileSettings, TierPolicySettings
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,64 @@ class QQSDEvidenceSignal:
     tags: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
     payload: dict | None = None
+
+
+@dataclass(frozen=True)
+class AIAdjustment:
+    value_delta: float = 0.0
+    confidence_delta: float = 0.0
+    note: str = ""
+    payload: dict | None = None
+
+
+def _ai_adjustment(edge: MarketEdge, ai_signal: AISignal, ai_settings: AISettings) -> AIAdjustment:
+    ai_prob = ai_signal.probabilities.get(edge.selection)
+    if ai_prob is None or ai_signal.market_type != edge.market_type:
+        return AIAdjustment()
+
+    market_prob = 1.0 / edge.best_price if edge.best_price > 1.0 else 0.0
+    ai_edge = ai_prob * edge.best_price - 1.0
+    label = selection_label(edge.selection)
+    applied = ai_signal.confidence >= ai_settings.min_apply_confidence
+
+    payload = {
+        "model": ai_signal.model,
+        "selection": edge.selection,
+        "ai_probability": round(ai_prob, 4),
+        "market_probability": round(market_prob, 4),
+        "ai_edge": round(ai_edge, 4),
+        "signal_confidence": round(ai_signal.confidence, 4),
+        "applied": applied,
+        "analysis": ai_signal.analysis,
+    }
+
+    if not applied:
+        note = f"AI分析（置信度{ai_signal.confidence:.2f}偏低，仅供参考）：{ai_signal.analysis}"
+        return AIAdjustment(note=note, payload=payload)
+
+    value_delta = _clamp(
+        ai_edge * 180.0 * ai_signal.confidence,
+        -ai_settings.max_value_shift,
+        ai_settings.max_value_shift,
+    )
+    prob_gap = ai_prob - market_prob
+    confidence_delta = _clamp(
+        prob_gap * ai_signal.confidence,
+        -ai_settings.max_confidence_shift,
+        ai_settings.max_confidence_shift,
+    )
+    payload["value_delta"] = round(value_delta, 3)
+    payload["confidence_delta"] = round(confidence_delta, 4)
+    note = (
+        f"AI对{label}真实概率估计{ai_prob:.0%}（市场隐含{market_prob:.0%}），"
+        f"价值分{'+' if value_delta >= 0 else ''}{value_delta:.1f}。{ai_signal.analysis}"
+    )
+    return AIAdjustment(
+        value_delta=value_delta,
+        confidence_delta=confidence_delta,
+        note=note,
+        payload=payload,
+    )
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -831,6 +890,7 @@ def score_match(
     odds_snapshots: list[OddsSnapshot],
     findings: list[AgentFinding],
     settings: Settings,
+    ai_signal: AISignal | None = None,
 ) -> Recommendation:
     league_settings = _league_settings_for_match(match, settings)
     league_profile_payload = _league_profile_payload(league_settings)
@@ -890,6 +950,11 @@ def score_match(
         0.05,
         0.93,
     )
+
+    ai_adjustment = _ai_adjustment(edge, ai_signal, settings.ai) if ai_signal is not None else AIAdjustment()
+    if ai_adjustment.value_delta or ai_adjustment.confidence_delta:
+        value_score = _clamp(value_score + ai_adjustment.value_delta, 0.0, 100.0)
+        confidence = _clamp(confidence + ai_adjustment.confidence_delta, 0.05, 0.93)
 
     status = RecommendationStatus.recommended
     reasons: list[str] = []
@@ -981,6 +1046,8 @@ def score_match(
     score_breakdown["strategy_confidence_class"] = strategy_confidence_class
     if qqsd_signal.payload:
         score_breakdown["qqsd_evidence"] = qqsd_signal.payload
+    if ai_adjustment.payload:
+        score_breakdown["ai_analysis"] = ai_adjustment.payload
     if strategy_profile is not None:
         reason += f" 命中回测策略池：{strategy_profile.name}（{strategy_profile.stability_label}）。"
     elif status is RecommendationStatus.paper_candidate:
@@ -993,6 +1060,8 @@ def score_match(
         reason += f" 命中分层小仓实盘门槛，最高仓位 {stake_units:.1f}u。"
     if qqsd_signal.notes:
         reason += " QQSD补充证据：" + "；".join(qqsd_signal.notes[:4]) + "。"
+    if ai_adjustment.note:
+        reason += " " + ai_adjustment.note
 
     recommendation = Recommendation(
         id=f"{match.id}-{edge.market_type}-{edge.selection}-v1",

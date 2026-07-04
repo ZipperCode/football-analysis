@@ -25,6 +25,7 @@ from football_analysis.db import StructuredRepository
 from football_analysis.ingestion import IngestionService
 from football_analysis.live_gate import allocate_live_stakes, apply_live_gate
 from football_analysis.portfolio import apply_portfolio_constraints
+from football_analysis.ai_analysis import build_ai_signal
 from football_analysis.scoring import _normalized_strategy_selection, score_match
 from football_analysis.seed_data import build_seed_dataset
 from football_analysis.settings import Settings, load_settings
@@ -162,7 +163,8 @@ class AnalysisService:
             for finding in self.repository.list_models("findings", AgentFinding)
             if finding.match_id == match_id
         ]
-        recommendation = score_match(match, odds, findings, self.settings)
+        ai_signal = build_ai_signal(match, odds, findings, self.settings)
+        recommendation = score_match(match, odds, findings, self.settings, ai_signal=ai_signal)
         stored = self.repository.get_model("recommendations", recommendation.id, Recommendation)
         if stored is not None and _is_world_cup_final_recommendation(stored, match, self.settings):
             recommendation = stored

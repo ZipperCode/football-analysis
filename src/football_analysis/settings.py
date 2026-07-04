@@ -202,6 +202,30 @@ class StrategyProfileSettings(BaseModel):
     worst_season_roi: float | None = None
 
 
+class AISettings(BaseModel):
+    """LLM 分析层配置。
+
+    默认关闭，只有显式 enabled 且 api_key_env 对应环境变量存在时才会调用远程 LLM。
+    LLM 只提供概率修正与可读分析，不直接决定实盘门槛，权重受 max_* 约束以防喧宾夺主。
+    """
+
+    enabled: bool = False
+    base_url: str = "http://localhost:8084/v1"
+    api_key_env: str = "FOOTBALL_AI_KEY"
+    model: str = "deepseek-v4-pro"
+    timeout_seconds: float = Field(default=30.0, gt=0.0)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=700, ge=1)
+    # LLM 概率对最终 value_score 的最大影响权重（分值），限制其相对赔率信号的话语权。
+    max_value_shift: float = Field(default=14.0, ge=0.0, le=40.0)
+    # LLM 对 confidence 的最大调整幅度。
+    max_confidence_shift: float = Field(default=0.08, ge=0.0, le=0.3)
+    # 只有 LLM 自报 confidence 达到该阈值才允许修正评分，低于则仅作为分析文本。
+    min_apply_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    # 仅对这些市场调用 LLM 概率估计（当前只支持 1x2 的独立概率）。
+    markets: list[str] = Field(default_factory=lambda: ["1x2"])
+
+
 class TelegramSettings(BaseModel):
     bot_token_env: str = "TELEGRAM_BOT_TOKEN"
     chat_id_env: str = "TELEGRAM_CHAT_ID"
@@ -239,6 +263,7 @@ class Settings(BaseModel):
     data_sources: dict[str, SourceSettings] = Field(default_factory=dict)
     execution_brokers: dict[str, ExecutionBrokerSettings] = Field(default_factory=dict)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
+    ai: AISettings = Field(default_factory=AISettings)
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -268,6 +293,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
 
     if database_url := os.getenv("DATABASE_URL"):
         settings.storage.database_url = database_url
+
+    if ai_base_url := os.getenv("FOOTBALL_AI_BASE_URL"):
+        settings.ai.base_url = ai_base_url
 
     return settings
 
